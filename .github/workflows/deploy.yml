@@ -1,0 +1,70 @@
+name: CI/CD for Google Store
+
+on:
+  push:
+    branches:
+      - main
+
+env:
+  AWS_REGION: ap-northeast-1
+  ECR_REPO_PREFIX: google-store
+  CLUSTER_NAME: shopping-cluster
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: 🧾 Checkout code
+        uses: actions/checkout@v4
+
+      - name: 🔧 Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: 🔍 Create ECR repositories if not exist
+        run: |
+          for service in electronics phones computers earphones; do
+            aws ecr describe-repositories --repository-names $ECR_REPO_PREFIX-$service || \
+            aws ecr create-repository --repository-name $ECR_REPO_PREFIX-$service
+          done
+
+      - name: 🔐 Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: 🐳 Build, tag, and push Docker images
+        run: |
+          for service in electronics phones computers earphones; do
+            IMAGE_URI="${{ steps.login-ecr.outputs.registry }}/$ECR_REPO_PREFIX-$service:latest"
+            echo "Building and pushing $IMAGE_URI"
+            docker build -t $IMAGE_URI ./$service
+            docker push $IMAGE_URI
+
+            # Update Kubernetes deployment with new image tag
+            sed -i "s|image:.*|image: $IMAGE_URI|" ./$service/deployment.yml
+          done
+
+      - name: 🔁 Commit updated deployment files
+        run: |
+          git config --global user.name 'GitHub Actions'
+          git config --global user.email 'actions@github.com'
+          git add ./*/deployment.yml
+          git commit -m "Update image tags in deployment files" || echo "No changes to commit"
+          git push
+
+      - name: ⚙️ Set up kubectl
+        run: |
+          aws eks update-kubeconfig --region $AWS_REGION --name $CLUSTER_NAME
+
+      - name: 🚀 Deploy to Kubernetes
+        run: |
+          kubectl apply -f ingress.yml
+          for service in electronics phones computers earphones; do
+            kubectl apply -f $service/deployment.yml
+            kubectl apply -f $service/service.yml
+            kubectl apply -f $service/autoscaler.yml
+          done
