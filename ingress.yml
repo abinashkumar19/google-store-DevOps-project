@@ -1,1 +1,45 @@
-
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: google-shop-ingress
+  annotations:
+    kubernetes.io/ingress.class: nginx
+spec:
+  rules:
+  - http:
+      paths:
+      - path: /electronics
+        pathType: Prefix
+        backend:
+          service:
+            name: electronics-service
+            port:
+              number: 80
+      - path: /phones
+        pathType: Prefix
+        backend:
+          service:
+            name: phones-service
+            port:
+              number: 80
+      - path: /computers
+        pathType: Prefix
+        backend:
+          service:
+            name: computers-service
+            port:
+              number: 80
+      - path: /earphones
+        pathType: Prefix
+        backend:
+          service:
+            name: earphones-service
+            port:
+              number: 80
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: root-frontend-service
+            port:
+              number: 80
