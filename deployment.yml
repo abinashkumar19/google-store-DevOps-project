@@ -1,0 +1,19 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: main-frontend-deployment
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: main-frontend
+  template:
+    metadata:
+      labels:
+        app: main-frontend
+    spec:
+      containers:
+      - name: main-frontend
+        image: <YOUR_ECR_URL>/root-frontend:latest
+        ports:
+        - containerPort: 80
