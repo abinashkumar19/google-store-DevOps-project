@@ -16,6 +16,6 @@ spec:
     spec:
       containers:
       - name: phones
-        image: <YOUR_ECR_URL>/phones:latest
+        image: <placeholder>
         ports:
         - containerPort: 80
