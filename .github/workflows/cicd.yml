@@ -1,4 +1,4 @@
-name: CI/CD to EC2 + ECR + Kubernetes (Full Stack)
+name: CI/CD for Google Store (Full Stack)
 
 on:
   push:
@@ -7,10 +7,11 @@ on:
 
 env:
   AWS_REGION: ap-northeast-1
-  ECR_REPOSITORY_PREFIX: google-store
-  EC2_USER: ec2-user
-  EKS_CLUSTER_NAME: abinash
+  ECR_REGISTRY: ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.ap-northeast-1.amazonaws.com
   SERVICES: "electronics phones computers earphones backend"
+  K8S_NAMESPACE: default
+  CLUSTER_NAME: abinash
+  EC2_USER: ec2-user
 
 permissions:
   contents: write
@@ -20,96 +21,68 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      # 1. Checkout repository
       - name: 🧾 Checkout repository
         uses: actions/checkout@v4
 
-      # 2. Configure AWS credentials
-      - name: ⚙️ Configure AWS credentials
+      - name: 🔧 Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: ${{ env.AWS_REGION }}
 
-      # 3. Decode EC2 SSH key
-      - name: 🔑 Decode and prepare EC2 SSH key
-        run: |
-          echo "${{ secrets.EC2_PEM_B64 }}" | base64 -d > ec2-key.pem
-          chmod 400 ec2-key.pem
+      - name: 📦 Login to ECR
+        uses: aws-actions/amazon-ecr-login@v2
 
-      # 4. Build, tag, and push Docker images to ECR
-      - name: 🐳 Build & Push Docker images to ECR
+      - name: 🛠 Build, tag, and push Docker images
         run: |
-          ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
           for service in $SERVICES; do
-            IMAGE_TAG=$(git rev-parse --short HEAD)-$(date +%Y%m%d%H%M%S)
-            REPO_NAME="${ECR_REPOSITORY_PREFIX}-${service}"
-            IMAGE_URI=$ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/$REPO_NAME:$IMAGE_TAG
-
-            echo "🧩 Building and pushing image for $service: $IMAGE_URI"
-
-            # Create ECR repo if it doesn't exist
+            REPO_NAME="google-store-$service"
+            IMAGE_TAG="${{ github.sha }}"
             aws ecr describe-repositories --repository-names $REPO_NAME >/dev/null 2>&1 || \
               aws ecr create-repository --repository-name $REPO_NAME
-
-            # Build Docker image
-            docker build -t $IMAGE_URI ./$service
-
-            # Login and push
-            aws ecr get-login-password --region $AWS_REGION | \
-              docker login --username AWS --password-stdin $ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com
-            docker push $IMAGE_URI
-
-            # Save image URI
-            echo "$service=$IMAGE_URI" >> image_uris.txt
+            docker build -t $ECR_REGISTRY/$REPO_NAME:$IMAGE_TAG ./$service
+            docker push $ECR_REGISTRY/$REPO_NAME:$IMAGE_TAG
+            if [ -f $service/deployment.yml ]; then
+              sed -i "s|image:.*|image: $ECR_REGISTRY/$REPO_NAME:$IMAGE_TAG|g" $service/deployment.yml
+            fi
           done
 
-      # 5. Update Deployment YAMLs locally
-      - name: 💾 Update Deployment YAMLs
-        run: |
-          while IFS="=" read -r service uri; do
-            deploy_file="./$service/deployment.yml"
-            if [ -f "$deploy_file" ]; then
-              sed -i "s|image:.*|image: ${uri}|g" "$deploy_file"
-            fi
-          done < image_uris.txt
-
-      # 6. Commit updated deployment files (optional)
       - name: 🔄 Commit updated deployment files
         run: |
           git config --global user.name 'GitHub Actions'
           git config --global user.email 'actions@github.com'
           git add */deployment.yml
-          git commit -m "Update image tags in deployment files" || echo "No changes to commit"
-          git push || echo "Push failed, probably due to permissions"
+          git commit -m "Update image tags" || echo "No changes to commit"
+          git push || echo "Push failed (likely permissions)"
 
-      # 7. Deploy to EC2 + Kubernetes
-      - name: 🚀 Deploy to EC2 and EKS
+      - name: 🔑 Decode EC2 PEM key
+        run: |
+          echo "${{ secrets.EC2_PEM_B64 }}" | base64 --decode > project.pem
+          chmod 400 project.pem
+
+      - name: 📤 Copy YAML files to EC2
         env:
           EC2_HOST: ${{ secrets.EC2_HOST }}
         run: |
-          scp -i ec2-key.pem -o StrictHostKeyChecking=no -r */deployment.yml */service.yml */autoscaler.yml image_uris.txt $EC2_USER@$EC2_HOST:/home/$EC2_USER/
+          scp -i project.pem -o StrictHostKeyChecking=no -r */*.yml $EC2_USER@$EC2_HOST:/home/$EC2_USER/
 
-          ssh -i ec2-key.pem -o StrictHostKeyChecking=no $EC2_USER@$EC2_HOST << 'EOF'
-            set -e
-
-            # Configure kubectl for EKS
-            aws eks update-kubeconfig --region ap-northeast-1 --name abinash
-
-            # Apply Kubernetes manifests for each service
-            while IFS="=" read -r service uri; do
-              cd /home/$EC2_USER/$service
-              sed -i "s|image:.*|image: ${uri}|g" deployment.yml
-              kubectl apply -f .
-              cd ..
-            done < /home/$EC2_USER/image_uris.txt
-
-            echo "✅ Deployment complete!"
-          EOF
-
-      # 8. Verify deployment
-      - name: ✅ Verify resources
+      - name: 🚀 Deploy on EC2
+        env:
+          EC2_HOST: ${{ secrets.EC2_HOST }}
         run: |
-          ssh -i ec2-key.pem -o StrictHostKeyChecking=no $EC2_USER@$EC2_HOST "kubectl get pods,svc,ingress -n default"
-
+          ssh -i project.pem -o StrictHostKeyChecking=no $EC2_USER@$EC2_HOST << 'EOF'
+            set -e
+            aws eks update-kubeconfig --name abinash --region ap-northeast-1
+            if [ -f ingress.yml ]; then
+              kubectl apply -f ingress.yml --validate=false
+            fi
+            for service in electronics phones computers earphones backend; do
+              [ -f $service/service.yml ] && kubectl apply -f $service/service.yml
+              [ -f $service/deployment.yml ] && kubectl apply -f $service/deployment.yml
+              [ -f $service/autoscaler.yml ] && kubectl apply -f $service/autoscaler.yml
+            done
+            [ -f deployment.yml ] && kubectl apply -f deployment.yml
+            [ -f service.yml ] && kubectl apply -f service.yml
+            kubectl get pods,svc,ingress -n default
+          EOF
