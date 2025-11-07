@@ -16,6 +16,6 @@ spec:
     spec:
       containers:
       - name: computers
-        image: 049061799945.dkr.ecr.ap-northeast-1.amazonaws.com/google-store-computers:3536e3d-20251107040931
+        image: 049061799945.dkr.ecr.ap-northeast-1.amazonaws.com/google-store-computers:25fa1bb058a6b8a210644ef49876d61b4704a8f5
         ports:
         - containerPort: 80
