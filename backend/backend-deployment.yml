@@ -1,21 +1,124 @@
-apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: backend-deployment
-  labels:
-    app: backend
-spec:
-  replicas: 2
-  selector:
-    matchLabels:
-      app: backend
-  template:
-    metadata:
-      labels:
-        app: backend
-    spec:
-      containers:
-        - name: backend-container
-          image: 049061799945.dkr.ecr.ap-northeast-1.amazonaws.com/shopping-site-backend:52f74d4ce52f7c8ebda776f8fd408e520bd0c1e1
-          ports:
-            - containerPort: 5000
+name: CI/CD for Shopping Site (Frontend + Backend)
+
+on:
+  push:
+    branches:
+      - main
+    paths-ignore:
+      - '**/deployment.yml'   # 🚫 Prevent re-trigger when only image tags are updated
+
+env:
+  AWS_REGION: ap-northeast-1
+  ECR_REGISTRY: ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.ap-northeast-1.amazonaws.com
+  FRONTEND_SERVICES: "main phones computers earphones payment"
+  BACKEND_SERVICE: "backend"
+
+permissions:
+  contents: write
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      # 1️⃣ Checkout
+      - name: 🧾 Checkout repository
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GIT_PAT }}
+
+      # 2️⃣ Configure AWS
+      - name: 🔧 Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      # 3️⃣ Login to ECR
+      - name: 📦 Login to Amazon ECR
+        uses: aws-actions/amazon-ecr-login@v2
+
+      # 4️⃣ Build & Push Docker images
+      - name: 🛠 Build and Push Docker Images
+        run: |
+          set -e
+          IMAGE_TAG="${GITHUB_SHA}"
+
+          # --- Frontend Services ---
+          for service in $FRONTEND_SERVICES; do
+            FOLDER="frontend/$service"
+            REPO_NAME="shopping-site-$service"
+            IMAGE_URI="$ECR_REGISTRY/$REPO_NAME:$IMAGE_TAG"
+
+            if [ ! -f "$FOLDER/Dockerfile" ]; then
+              echo "⚠️ No Dockerfile in $FOLDER, skipping..."
+              continue
+            fi
+
+            echo "🚀 Building $service..."
+            aws ecr describe-repositories --repository-names $REPO_NAME >/dev/null 2>&1 || \
+              aws ecr create-repository --repository-name $REPO_NAME
+
+            docker build -t $IMAGE_URI $FOLDER
+            docker push $IMAGE_URI
+
+            # Update deployment.yml with new image
+            sed -i "s|image:.*|image: $IMAGE_URI|g" "$FOLDER/deployment.yml"
+          done
+
+          # --- Backend Service ---
+          FOLDER="backend"
+          REPO_NAME="shopping-site-backend"
+          IMAGE_URI="$ECR_REGISTRY/$REPO_NAME:$IMAGE_TAG"
+
+          echo "🚀 Building backend..."
+          aws ecr describe-repositories --repository-names $REPO_NAME >/dev/null 2>&1 || \
+            aws ecr create-repository --repository-name $REPO_NAME
+
+          docker build -t $IMAGE_URI $FOLDER
+          docker push $IMAGE_URI
+
+          sed -i "s|image:.*|image: $IMAGE_URI|g" "$FOLDER/backend-deployment.yml"
+
+      # 5️⃣ Commit updated image references
+      - name: 🔄 Commit updated YAML files
+        run: |
+          git config --global user.name "GitHub Actions"
+          git config --global user.email "actions@github.com"
+
+          git add frontend/**/deployment.yml backend/backend-deployment.yml
+
+          # Add skip ci to avoid retrigger
+          git commit -m "🔄 Update image tags after build [skip ci]" || echo "No changes to commit"
+
+          # Only push if there are actual changes
+          git diff --quiet && echo "⚠️ No changes detected, skipping push." || git push origin main
+
+      # 6️⃣ SSH Deploy to EC2
+      - name: 🚀 Deploy on EC2
+        uses: appleboy/ssh-action@v1.2.0
+        with:
+          host: ${{ secrets.EC2_HOST }}
+          username: ec2-user
+          key: ${{ secrets.EC2_SSH_KEY }}
+          script: |
+            echo "🔄 Starting deployment on EC2..."
+
+            cd /home/ec2-user
+
+            if [ -d "shopping-site" ]; then
+              echo "📥 Pulling latest code..."
+              cd shopping-site
+              git pull origin main
+            else
+              echo "📦 Cloning fresh repo..."
+              git clone https://github.com/${{ github.repository }} shopping-site
+              cd shopping-site
+            fi
+
+            echo "🐳 Updating and restarting containers..."
+            docker compose down || true
+            docker compose up -d --build
+
+            echo "✅ Deployment complete!"
