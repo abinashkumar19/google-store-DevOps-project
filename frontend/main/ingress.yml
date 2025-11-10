@@ -1,54 +1,58 @@
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
-  name: google-shop-ingress
-  namespace: default
+  name: shopping-site-ingress
+  namespace: google
   annotations:
-    nginx.ingress.kubernetes.io/rewrite-target: /
+    kubernetes.io/ingress.class: alb               # For AWS ALB (use nginx if you're using NGINX ingress)
+    alb.ingress.kubernetes.io/scheme: internet-facing
+    alb.ingress.kubernetes.io/target-type: ip
+    alb.ingress.kubernetes.io/listen-ports: '[{"HTTP":80}]'
 spec:
-  ingressClassName: nginx
   rules:
-  - http:
-      paths:
-      - path: /electronics
-        pathType: Prefix
-        backend:
-          service:
-            name: electronics-service
-            port:
-              number: 80
-      - path: /phones
-        pathType: Prefix
-        backend:
-          service:
-            name: phones-service
-            port:
-              number: 80
-      - path: /computers
-        pathType: Prefix
-        backend:
-          service:
-            name: computers-service
-            port:
-              number: 80
-      - path: /earphones
-        pathType: Prefix
-        backend:
-          service:
-            name: earphones-service
-            port:
-              number: 80
-      - path: /backend
-        pathType: Prefix
-        backend:
-          service:
-            name: backend-service
-            port:
-              number: 80
-      - path: /
-        pathType: Prefix
-        backend:
-          service:
-            name: main-frontend-service
-            port:
-              number: 80
+    - http:
+        paths:
+          # 🏠 Main frontend (homepage)
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: main-frontend-service
+                port:
+                  number: 80
+
+          # 📱 Phones section
+          - path: /phones
+            pathType: Prefix
+            backend:
+              service:
+                name: phones-frontend-service
+                port:
+                  number: 80
+
+          # 💻 Computers section
+          - path: /computers
+            pathType: Prefix
+            backend:
+              service:
+                name: computers-frontend-service
+                port:
+                  number: 80
+
+          # 🎧 Earphones section
+          - path: /earphones
+            pathType: Prefix
+            backend:
+              service:
+                name: earphones-frontend-service
+                port:
+                  number: 80
+
+          # 💳 Payment section
+          - path: /payment
+            pathType: Prefix
+            backend:
+              service:
+                name: payment-frontend-service
+                port:
+                  number: 80
