@@ -1,4 +1,4 @@
-name: CI/CD for Google Store (Full Stack)
+name: CI/CD for Google Store (Full Stack - EC2 + ECR)
 
 on:
   push:
@@ -9,8 +9,6 @@ env:
   AWS_REGION: ap-northeast-1
   ECR_REGISTRY: ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.ap-northeast-1.amazonaws.com
   SERVICES: "frontend electronics phones computers earphones backend"
-  K8S_NAMESPACE: default
-  CLUSTER_NAME: abinash
 
 permissions:
   contents: write
@@ -38,7 +36,7 @@ jobs:
       - name: 🔍 Verify AWS Identity
         run: aws sts get-caller-identity
 
-      # 4️⃣ Login to ECR
+      # 4️⃣ Login to Amazon ECR
       - name: 📦 Login to Amazon ECR
         uses: aws-actions/amazon-ecr-login@v2
 
@@ -92,38 +90,7 @@ jobs:
           git commit -m "🔄 Auto-update image tags after build" || echo "No changes to commit"
           git push origin main || echo "⚠️ Git push skipped (no changes)"
 
-      # 7️⃣ Configure kubectl for EKS
-      - name: ☸️ Configure kubectl for EKS
-        run: |
-          aws eks update-kubeconfig --name $CLUSTER_NAME --region $AWS_REGION --alias github-actions
-          kubectl config use-context github-actions
-          kubectl cluster-info
-
-      # 8️⃣ Apply all Kubernetes manifests
-      - name: 🚀 Apply Kubernetes manifests to EKS
-        run: |
-          set -e
-          echo "📦 Deploying manifests to EKS..."
-
-          for service in $SERVICES; do
-            if [ "$service" = "frontend" ]; then FOLDER="."
-            elif [ "$service" = "backend" ]; then FOLDER="Backend"
-            else FOLDER="$service"; fi
-
-            for file in service.yml deployment.yml autoscaler.yml backend-deployment.yml backend-service.yml; do
-              if [ -f "$FOLDER/$file" ]; then
-                echo "➡️ Applying $FOLDER/$file ..."
-                kubectl apply -f "$FOLDER/$file" -n $K8S_NAMESPACE || true
-              fi
-            done
-          done
-
-          if [ -f ingress.yml ]; then
-            echo "🌐 Applying ingress.yml ..."
-            kubectl apply -f ingress.yml -n $K8S_NAMESPACE --validate=false || true
-          fi
-
-      # 9️⃣ SSH into EC2 to pull repo and deploy Docker containers
+      # 7️⃣ SSH into EC2 to pull repo and deploy Docker containers
       - name: 🔑 Deploy to EC2 via SSH
         uses: appleboy/ssh-action@v1.2.0
         with:
