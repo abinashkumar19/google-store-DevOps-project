@@ -37,6 +37,13 @@ spec:
                 name: computers-service
                 port:
                   number: 80
+          - path: /googlemusic
+            pathType: Prefix
+            backend:
+              service:
+                name: googlemusic-service
+                port:
+                  number: 80
           - path: /earphones
             pathType: Prefix
             backend:
@@ -51,5 +58,3 @@ spec:
                 name: payment-service
                 port:
                   number: 80
-
-
