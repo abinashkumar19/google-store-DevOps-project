@@ -4,14 +4,75 @@
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width,initial-scale=1" />
 <title>Google Store — Electronics</title>
+<link rel="icon" type="image/png" href="https://upload.wikimedia.org/wikipedia/commons/thumb/c/c1/Google_%22G%22_logo.svg/1200px-Google_%22G%22_logo.svg.png">
 <meta name="description" content="Advanced demo e-commerce template: animations, carousel, cart, filters, offline" />
 <link rel="stylesheet" href="style.css">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/swiper@10/swiper-bundle.min.css"/>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/gsap/3.12.2/gsap.min.js" defer></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/gsap/3.12.2/ScrollTrigger.min.js" defer></script>
-<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/swiper@10/swiper-bundle.min.css"/>
 <script src="https://cdn.jsdelivr.net/npm/swiper@10/swiper-bundle.min.js" defer></script>
 <script src="https://cdn.jsdelivr.net/npm/vanilla-tilt@1.7.3/dist/vanilla-tilt.min.js" defer></script>
 <script src="https://unpkg.com/feather-icons" defer></script>
+<style>
+/* --- Additional Animations --- */
+@keyframes fadeSpin {
+  0% {opacity:0; transform:scale(0.92) rotate(-8deg);}
+  70% {opacity:0.8;}
+  100% {opacity:1; transform:scale(1) rotate(0);}
+}
+.preloader .loader {
+  animation: fadeSpin 0.8s cubic-bezier(.87,0,.13,1) backwards;
+}
+.parallax .p-layer {
+  transition: transform 1.2s cubic-bezier(.78,0,.2,1);
+  will-change: transform;
+}
+.reveal {
+  opacity: 0;
+  transform: translateY(48px) scale(0.98);
+  transition: opacity 0.7s cubic-bezier(.68,0,.21,1), transform 0.7s cubic-bezier(.68,0,.21,1);
+}
+/* Remove translucent color from parallax background layers */
+.parallax .layer-1 { background: linear-gradient(120deg, #319eec 50%, #319eec 100%); }
+.parallax .layer-2 { background: linear-gradient(60deg, #a7ffeb 70%, #a7ffeb 100%); }
+.parallax .layer-3 { background: linear-gradient(180deg, #f5a623 0%, #f5a623 90%);}
+.hero .hero-card.floating {
+  box-shadow: 0 12px 42px #10a8ff33, 0 1.5px 0.8px #0002;
+  transition: transform .5s cubic-bezier(.53,2,.23,.9), box-shadow .4s;
+  animation: parallax-float 2.5s ease-in-out infinite alternate;
+}
+.nav-inner, .controls, .catalog {
+  transition: box-shadow .5s cubic-bezier(.5,0,.3,1);
+}
+.site-header, .site-footer {
+  background: linear-gradient(to right, #061921 50%, #232c39 100%);
+  transition: background 1.2s;
+}
+.hero-left, .hero-right, .controls, .catalog {
+  opacity: 0;
+  transform: translateY(40px) scale(0.97);
+}
+footer.site-footer {
+  animation: fadein-footer 1.5s 1.5s both;
+}
+@keyframes fadein-footer { from{opacity:0} to{opacity:1} }
+/* Quick view modal background black */
+#modal .modal-card {
+  background: #000 !important;
+}
+#modal .modal-card, #paymentModal .modal-card {
+  animation: pop-in 0.55s both cubic-bezier(.61,-0.06,.26,1.22);
+}
+@keyframes pop-in {
+  0% {opacity:0; transform:scale(0.87) translateY(18px);}
+  70% {opacity:1;}
+  100% {transform:scale(1) translateY(0);}
+}
+@keyframes parallax-float {
+  0%   { transform:translateY(0);}
+  100% { transform:translateY(12px);}
+}
+</style>
 </head>
 <body data-category="electronics" data-theme="dark">
 <div id="preloader" class="preloader" role="status" aria-live="polite">
@@ -20,17 +81,17 @@
     <div class="loader-text">Loading Google Store...</div>
   </div>
 </div>
-  
+
 <header class="site-header" role="banner">
   <div class="nav-inner container">
       <span class="brand-text">
-        <img src="https://latestlogo.com/wp-content/uploads/2024/01/google-store-logo.png" alt="Google Store Logo" style="width:64px; height:64px; object-fit:contain; vertical-align:middle; margin-left:6px;">
+        <img src="https://latestlogo.com/wp-content/uploads/2024/01/google-store-logo.png" alt="Google Store Logo" style="width:132px; height:66px; object-fit:contain; vertical-align:middle; margin-left:6px;">
       </span>
     </a>
     <nav class="main-nav" aria-label="Primary">
       <ul>
-        <li><a href="/electronics" class="">Electronics</a></li>
-        <li><a href="/phones" class="active">Phones</a></li>
+        <li><a href="/electronics" class="active">Electronics</a></li>
+        <li><a href="/phones" class="">Phones</a></li>
         <li><a href="/computers" class="">Computers</a></li>
         <li><a href="/earphones" class="">Earphones</a></li>
       </ul>
@@ -163,8 +224,7 @@
   </div>
 </footer>
 
-
-<!-- Payment Modal -->
+  <!-- Payment Modal -->
 <div id="paymentModal" class="modal-backdrop" aria-hidden="true" role="dialog" aria-modal="true" style="display:none">
   <div class="modal-card" role="document" style="max-width: 480px;">
     <button id="paymentClose" class="close" aria-label="Close" style="top:10px;right:10px;position:absolute;">✕</button>
@@ -262,18 +322,6 @@
 #paymentModal[aria-hidden="false"] { display: flex !important; align-items: center; justify-content: center; }
 #paymentModal .modal-card { background: #161616; border-radius: 10px; box-shadow: 0 4px 32px #0008; }
 </style>
-
-<footer class="site-footer">
-  <div class="container">
-    <div class="foot-grid">
-      <div>
-        <strong>Google Store</strong>
-        <p class="muted">developed by abinash kumar</p>
-      </div>
-      <div class="muted">© <span id="year"></span></div>
-    </div>
-  </div>
-</footer>
 
 <script src="script.js" defer></script>
 <script>
@@ -735,9 +783,8 @@ paymentModal.addEventListener('mousedown', function(e) {
     closePaymentModal();
 });
 
-</script>
-  
+</script>  
+
 <script src="script.js" defer></script>
 </body>
 </html>
-
