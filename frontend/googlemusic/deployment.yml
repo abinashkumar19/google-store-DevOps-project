@@ -16,6 +16,6 @@ spec:
     spec:
       containers:
       - name: googlemusic
-        image: 049061799945.dkr.ecr.ap-northeast-1.amazonaws.com/shopping-site-googlemusic:ecd19e3213879327ea321bde2606fac4a38405a6
+        image: 049061799945.dkr.ecr.ap-northeast-1.amazonaws.com/shopping-site-googlemusic:5bfbec580a295955e00b9219a52937203ab7e5ca
         ports:
         - containerPort: 80
