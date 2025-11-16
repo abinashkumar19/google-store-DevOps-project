@@ -5,7 +5,6 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Google Music</title>
     <link rel="icon" type="image/png" href="https://upload.wikimedia.org/wikipedia/commons/thumb/c/c1/Google_%22G%22_logo.svg/1200px-Google_%22G%22_logo.svg.png">
-    <!-- Font Awesome for icons -->
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
 <style>
 
@@ -39,9 +38,6 @@ body {
     line-height: 1.6;
     overflow-x: hidden;
 }
-
-/* Use Tailwind for responsiveness and utility *
-/* But using custom CSS for the advanced visual look *
 
 /* --- Layout Container --- */
 .music-player-container {
@@ -114,6 +110,48 @@ body {
     color: var(--primary-color);
     text-shadow: 0 0 5px rgba(52, 152, 219, 0.5);
 }
+
+/* --- NEW Search Bar Styling --- */
+.search-box {
+    padding: 10px 20px;
+    margin-bottom: 15px;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+    position: relative;
+}
+
+.search-input {
+    width: 100%;
+    padding: 10px 10px 10px 40px;
+    border: 1px solid rgba(255, 255, 255, 0.2);
+    border-radius: 20px;
+    background: rgba(0, 0, 0, 0.3);
+    color: var(--text-light);
+    font-size: 1rem;
+    outline: none;
+    transition: all 0.3s;
+}
+
+.search-input:focus {
+    border-color: var(--primary-color);
+    background: var(--bg-light);
+    box-shadow: 0 0 10px rgba(52, 152, 219, 0.5);
+}
+
+.search-box i {
+    position: absolute;
+    left: 30px;
+    top: 50%;
+    transform: translateY(-50%);
+    color: var(--text-muted);
+    font-size: 1.1rem;
+    pointer-events: none; /* Allows click through to input */
+    transition: color 0.3s;
+}
+
+.search-input:focus + i {
+    color: var(--primary-color);
+}
+/* --- END Search Bar Styling --- */
 
 .menu-item, .playlist-item {
     display: flex;
@@ -210,6 +248,9 @@ body {
     border: 1px solid rgba(255, 255, 255, 0.1);
     box-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.5);
     transition: all 0.5s ease-in-out;
+
+    /* Advanced: Dynamic Color accent (mimicking album art color extraction) */
+    --local-accent: var(--primary-color); 
 }
 
 .player-container.playing {
@@ -224,14 +265,11 @@ body {
     }
 }
 
-/* --- Album Art & Spinning Vinyl Effect --- */
-@keyframes spin {
-    from { transform: rotate(0deg); }
-    to { transform: rotate(360deg); }
-}
+/* --- Album Art & Static Display --- */
 
+/* Keyframe for visualizer pulse on art border */
 @keyframes visualizer-pulse {
-    0%, 100% { box-shadow: 0 0 0 0px var(--primary-color); }
+    0%, 100% { box-shadow: 0 0 0 0px var(--local-accent); }
     50% { box-shadow: 0 0 0 15px rgba(52, 152, 219, 0); }
 }
 
@@ -262,28 +300,10 @@ body {
     height: 100%;
     object-fit: cover;
     transition: transform 0.5s;
-    animation: none;
     border-radius: 50%; 
     border: 8px solid rgba(255, 255, 255, 0.1); 
 }
 
-.player-container.playing .album-art img {
-    animation: spin 10s linear infinite; 
-}
-
-.vinyl-overlay {
-    position: absolute;
-    top: 50%;
-    left: 50%;
-    transform: translate(-50%, -50%);
-    width: 25%;
-    height: 25%;
-    background-color: #222;
-    border: 10px solid #000;
-    border-radius: 50%;
-    box-shadow: 0 0 15px rgba(0, 0, 0, 0.9) inset;
-    pointer-events: none;
-}
 
 /* --- Song Info and Controls --- */
 .song-info {
@@ -300,6 +320,7 @@ body {
     overflow: hidden;
     text-overflow: ellipsis;
     text-shadow: 0 0 10px rgba(52, 152, 219, 0.7);
+    transition: color 0.5s, text-shadow 0.5s;
 }
 
 #artist-name {
@@ -324,6 +345,12 @@ body {
     transform: scaleY(1.3);
 }
 
+/* Advanced: Hover/Active state for drag-to-seek */
+.progress-container:active {
+    cursor: grabbing;
+    transform: scaleY(1.6);
+}
+
 /* --- The Actual Progress Bar Fill --- */
 #progress-bar {
     position: absolute;
@@ -331,10 +358,10 @@ body {
     left: 0;
     height: 100%;
     /* Gradient for a more advanced look */
-    background: linear-gradient(90deg, #3498db, #2ecc71); 
+    background: linear-gradient(90deg, var(--primary-color), var(--accent-color)); 
     box-shadow: 0 0 10px var(--primary-color); /* Glow */
     border-radius: 5px;
-    transition: width 0.1s linear, box-shadow 0.3s;
+    transition: width 0.1s linear, box-shadow 0.3s, background 0.5s;
 }
 
 /* --- Progress Dot (The animated thumb) --- */
@@ -349,10 +376,22 @@ body {
     border-radius: 50%;
     background: var(--text-light);
     border: 4px solid var(--primary-color);
-    box-shadow: 0 0 15px rgba(52, 152, 219, 1); /* Intense glow on thumb */
+    box-shadow: 0 0 10px var(--primary-color), 0 0 25px rgba(52, 152, 219, 0.5); /* Intense glow on thumb */
     pointer-events: none;
-    transition: background 0.3s, box-shadow 0.3s;
+    transition: background 0.3s, box-shadow 0.3s, border-color 0.5s;
 }
+
+@keyframes thumb-glow {
+    0% { box-shadow: 0 0 10px var(--primary-color), 0 0 10px rgba(52, 152, 219, 0.5); }
+    50% { box-shadow: 0 0 15px var(--primary-color), 0 0 25px rgba(52, 152, 219, 0.8); }
+    100% { box-shadow: 0 0 10px var(--primary-color), 0 0 10px rgba(52, 152, 219, 0.5); }
+}
+
+.player-container.playing #progress-bar::after {
+    /* Add a subtle ring pulse to the thumb */
+    animation: thumb-glow 1.5s ease-in-out infinite alternate; 
+}
+
 
 .time-info {
     display: flex;
@@ -588,7 +627,6 @@ body {
 </head>
 <body>
     <div class="music-player-container">
-        <!-- Sidebar -->
         <div class="sidebar">
             <div class="logo">
                 <img src="https://images.genius.com/59a92f849e980e83af49a57ca3167295.1000x1000x1.jpg" alt="Music Player Logo" class="logo-img">
@@ -598,6 +636,11 @@ body {
                 <div class="menu-item active">
                     <i class="fas fa-home"></i>
                     <span>Home</span>
+                </div>
+                
+                <div class="search-box">
+                    <input type="text" id="search-input" placeholder="Search song or artist..." class="search-input">
+                    <i class="fas fa-search"></i>
                 </div>
                 <div class="menu-item" id="discover-menu">
                     <i class="fas fa-compass"></i>
@@ -643,7 +686,6 @@ body {
             </div>
         </div>
         
-        <!-- Main Content -->
         <div class="main-content">
             <div class="now-playing-header">
                 <h1>Now Playing <i class="fas fa-music"></i></h1>
@@ -652,7 +694,6 @@ body {
             <div class="player-container" id="player-container">
                 <div class="album-art" id="album-art-container">
                     <img src="https://source.unsplash.com/random/400x400/?music,album" onerror="this.onerror=null; this.src='https://placehold.co/400x400/1e222d/bdc3c7?text=Music';" alt="Album Art" id="album-art">
-                    <div class="vinyl-overlay"></div>
                 </div>
                 
                 <div class="song-info">
@@ -660,7 +701,6 @@ body {
                     <p id="artist-name">Select a playlist to start</p>
                     
                     <div class="progress-container">
-                        <!-- THE VISUAL PROGRESS BAR -->
                         <div id="progress-bar"></div> 
                         <div class="time-info">
                             <span id="current-time">0:00</span>
@@ -698,16 +738,13 @@ body {
             <div class="queue-section">
                 <h3>Up Next <i class="fas fa-list-ul"></i></h3>
                 <div class="queue-list" id="queue-list">
-                    <!-- Dynamic queue items will be inserted here -->
-                </div>
+                    </div>
             </div>
         </div>
     </div>
 
-    <!-- Audio Player Element (hidden, controlled by JS) -->
     <audio id="audio-player"></audio>
     
-    <!-- Restriction Modal UI (instead of alert()) -->
     <div id="block-modal" style="display:none;position:fixed;top:0;left:0;width:100vw;height:100vh;background:rgba(0,0,0,0.8);z-index:10000;justify-content:center;align-items:center;">
         <div style="background:#2c3e50;color:#ecf0f1;padding:32px 40px;box-shadow:0 10px 32px rgba(0,0,0,0.4);border-radius:12px;text-align:center;max-width:90vw;">
             <div style="font-size:2rem;color:#e74c3c;margin-bottom:18px;"><i class="fas fa-exclamation-triangle"></i></div>
@@ -745,6 +782,8 @@ document.addEventListener('DOMContentLoaded', function() {
     const volumeValue = document.getElementById('volume-value');
     const volumeDownIcon = document.getElementById('volume-down-icon');
     const volumeUpIcon = document.getElementById('volume-up-icon');
+    // NEW: Search Input
+    const searchInput = document.getElementById('search-input');
 
     // --- Music library (Data that would normally come from an API/DB) ---
     const songs = [
@@ -753,7 +792,10 @@ document.addEventListener('DOMContentLoaded', function() {
         { title: "cheri cheri lady", artist: "Modern Talking", src: "https://moaning-indigo-a1f05wrd8c.edgeone.app/Cheri_Cheri_Lady.mp3", cover: "https://c.saavncdn.com/490/Original-80-s-2014-500x500.jpg", duration: "3:23" },
         { title: "Ed Sheeran - Shape of You", artist: "Ed Sheeran", src: "https://patient-red-nlbn3jtrtu.edgeone.app/Ed%20Sheeran%20-%20Shape%20of%20You%20(Official%20Music%20Video).mp3", cover: "https://upload.wikimedia.org/wikipedia/en/b/b4/Shape_Of_You_%28Official_Single_Cover%29_by_Ed_Sheeran.png", duration: "2:21" },
         { title: "Let Me Down Slowly x Main Dhoondne Ko Zamaane Mein (Gravero Mashup)", artist: "Gravero", src: "https://intact-fuchsia-tanizit5ua.edgeone.app/Let%20Me%20Down%20Slowly%20x%20Main%20Dhoondne%20Ko%20Zamaane%20Mein%20(Gravero%20Mashup)%20_%20Full%20Version.mp3", cover: "https://i.ytimg.com/vi/wqUFuZyR-xA/maxresdefault.jpg", duration: "3:46" },
+        { title: "Sahiba", artist: "Aditya Rikhari", src: "https://smooth-coral-mwcsw6ex3k.edgeone.app/Sahiba_Official_Music_Video_Aditya_Rikhari,_Ankita_Chhetri.mp3", cover: "https://c.saavncdn.com/140/Sahiba-Hindi-2023-20231213191015-500x500.jpg", duration: "3:46" },
         { title: "Ranjheya Ve", artist: "Zain Zohaib", src: "https://secret-amber-2uyqkkfbec.edgeone.app/Ranjheya%20Ve%20%20%20Zain%20Zohaib%20%20%20Yratta%20media.mp3", cover: "https://i.ytimg.com/vi/MVvEUAymQFM/maxresdefault.jpg", duration: "3:46" },
+        { title: "Zaroor x Tere Bina x Ishq Di Baajiyaan", artist: "Diljit Dosanjh", src: "https://lonely-ivory-eia6uw8et2.edgeone.app/ytmp3free.cc_zaroor-x-tere-bina-x-kabhi-use-noor-noor-kehta-hu-full-song-trending-reels-song-mashup-youtubemp3free.org.mp3", cover: "https://i.ytimg.com/vi/bStQwuVibyI/sddefault.jpg", duration: "4:46" },
+
     ];
     
     // --- Player state management ---
@@ -763,6 +805,15 @@ document.addEventListener('DOMContentLoaded', function() {
     let isRepeated = false;
     let originalQueue = [...songs];
     let shuffledQueue = [...songs].sort(() => Math.random() - 0.5);
+    let isSeeking = false; // Advanced: for drag-to-seek
+
+    // Advanced: Dynamic Color Mock (In a real scenario, a library like Vibrant.js would be used)
+    function getDynamicColor(songTitle) {
+        const hash = songTitle.split('').reduce((acc, char) => acc + char.charCodeAt(0), 0);
+        const hue = hash % 360;
+        // Return a saturated color based on a hash of the title
+        return `hsl(${hue}, 70%, 50%)`; 
+    }
     
     // Utility function to format seconds into MM:SS string
     const formatTime = (time) => {
@@ -784,6 +835,25 @@ document.addEventListener('DOMContentLoaded', function() {
         audioPlayer.src = song.src;
         
         durationEl.textContent = song.duration; 
+        
+        // --- Advanced: Dynamic Color Update ---
+        const dynamicColor = getDynamicColor(song.title);
+        playerContainer.style.setProperty('--local-accent', dynamicColor);
+        
+        // Also update primary colors to match the dynamic color for overall theme feel
+        document.documentElement.style.setProperty('--primary-color', dynamicColor);
+        document.documentElement.style.setProperty('--accent-color', dynamicColor); 
+
+        // Set up transition end to revert colors if player stops
+        playerContainer.addEventListener('transitionend', function revertColors() {
+            if (!isPlaying) {
+                document.documentElement.style.setProperty('--primary-color', '#3498db');
+                document.documentElement.style.setProperty('--accent-color', '#e74c3c');
+            }
+            playerContainer.removeEventListener('transitionend', revertColors);
+        });
+        // --- End Dynamic Color Update ---
+
 
         audioPlayer.load();
 
@@ -792,6 +862,7 @@ document.addEventListener('DOMContentLoaded', function() {
             if (isFinite(audioPlayer.duration)) {
                 durationEl.textContent = formatTime(audioPlayer.duration);
             }
+            // Trigger queue rendering to update highlight/duration
             renderQueue();
             // Reset progress visually when a new song loads
             progressBar.style.width = `0%`;
@@ -845,18 +916,21 @@ document.addEventListener('DOMContentLoaded', function() {
     function nextSong() {
         const queue = isShuffled ? shuffledQueue : originalQueue;
         
+        // Check repeat mode logic
         if (isRepeated) {
-            // Loop back to the start if repeating, otherwise go to next
-            currentSongIndex = (currentSongIndex + 1) % queue.length;
-        } else {
-            currentSongIndex++;
-            // Stop if it's the end of the non-repeating queue
-            if (currentSongIndex >= queue.length) {
-                currentSongIndex = 0; // Reset index to the first song
-                loadSong(currentSongIndex); // Load the first song
-                pauseSong(); // Keep it paused at the start
-                return;
-            }
+            // Simply restart the song if it's single repeat (assuming repeat mode is single song)
+            audioPlayer.currentTime = 0;
+            playSong();
+            return;
+        }
+        
+        currentSongIndex++;
+        // Stop if it's the end of the non-repeating queue
+        if (currentSongIndex >= queue.length) {
+            currentSongIndex = 0; // Reset index to the first song
+            loadSong(currentSongIndex); // Load the first song
+            pauseSong(); // Keep it paused at the start
+            return;
         }
 
         loadSong(currentSongIndex);
@@ -868,27 +942,16 @@ document.addEventListener('DOMContentLoaded', function() {
     // Update progress bar width and current time display
     function updateProgress() {
         const { currentTime, duration } = audioPlayer;
-        const progressPercent = (currentTime / duration) * 100;
-        
-        // Directly set width for the visual bar
-        progressBar.style.width = `${progressPercent}%`;
-        
-        currentTimeEl.textContent = formatTime(currentTime);
-    }
-    
-    // Seek to a new position on click
-    function setProgress(e) {
-        const container = e.currentTarget;
-        const width = container.clientWidth;
-        const clickX = e.offsetX;
-        const duration = audioPlayer.duration;
-        
-        if (isFinite(duration) && duration > 0) {
-            audioPlayer.currentTime = (clickX / width) * duration;
-            updateProgress();
+        if (isFinite(duration)) {
+            const progressPercent = (currentTime / duration) * 100;
+            
+            // Directly set width for the visual bar
+            progressBar.style.width = `${progressPercent}%`;
+            
+            currentTimeEl.textContent = formatTime(currentTime);
         }
     }
-
+    
     // Determine color based on volume level
     function getVolumeColor(val) {
         if (val < 0.33) return "#3498db";
@@ -932,24 +995,39 @@ document.addEventListener('DOMContentLoaded', function() {
         // Reload to reflect potential order change in queue UI
         loadSong(currentSongIndex);
         updatePlayerState();
+        filterSongs(); // Re-filter/re-render the list based on the new queue order
     }
     
     // Toggle repeat mode
     function toggleRepeat() {
         isRepeated = !isRepeated;
-        updatePlayerState();
+        repeatBtn.classList.toggle('active', isRepeated);
     }
     
     // Render the entire queue list dynamically
-    function renderQueue() {
+    function renderQueue(songList = (isShuffled ? shuffledQueue : originalQueue)) {
         queueList.innerHTML = '';
-        const queue = isShuffled ? shuffledQueue : originalQueue;
         
-        queue.forEach((song, index) => {
+        // Show a message if no songs are found/filtered
+        if (songList.length === 0) {
+            queueList.innerHTML = '<p style="text-align:center; padding: 20px; color: var(--text-muted);">No songs match your search.</p>';
+            return;
+        }
+
+        // Get the actual queue that is used for playback
+        const mainQueue = isShuffled ? shuffledQueue : originalQueue;
+        
+        songList.forEach((song, index) => {
+            // Find the index of this song in the main playback queue
+            const actualIndex = mainQueue.findIndex(qSong => 
+                qSong.title === song.title && qSong.artist === song.artist
+            );
+            const isActive = actualIndex === currentSongIndex;
+
             const queueItem = document.createElement('div');
-            queueItem.className = `queue-item ${index === currentSongIndex ? 'active' : ''}`;
+            queueItem.className = `queue-item ${isActive ? 'active' : ''}`;
             
-            const displayDuration = (index === currentSongIndex && isFinite(audioPlayer.duration)) 
+            const displayDuration = (isActive && isFinite(audioPlayer.duration)) 
                 ? formatTime(audioPlayer.duration) 
                 : song.duration;
             
@@ -964,8 +1042,9 @@ document.addEventListener('DOMContentLoaded', function() {
                 <div class="queue-item-duration">${displayDuration}</div>
             `;
             
+            // Clicking a list item loads the song found at its 'actualIndex' in the main queue
             queueItem.addEventListener('click', () => {
-                currentSongIndex = index;
+                currentSongIndex = actualIndex; 
                 loadSong(currentSongIndex);
                 playSong(); 
             });
@@ -974,13 +1053,30 @@ document.addEventListener('DOMContentLoaded', function() {
         });
     }
     
+    // --- NEW Search Logic ---
+    function filterSongs() {
+        const query = searchInput.value.toLowerCase().trim();
+        const currentQueue = isShuffled ? shuffledQueue : originalQueue;
+
+        if (query.length === 0) {
+            // If query is empty, render the full main queue
+            renderQueue(currentQueue);
+            return;
+        }
+
+        const filtered = currentQueue.filter(song => {
+            return song.title.toLowerCase().includes(query) || 
+                   song.artist.toLowerCase().includes(query);
+        });
+
+        // Render the filtered results
+        renderQueue(filtered);
+    }
+    
     // Update visual state of all controls and queue items
     function updatePlayerState() {
-        // Update active song in queue
-        const queueItems = document.querySelectorAll('.queue-item');
-        queueItems.forEach((item, index) => {
-            item.classList.toggle('active', index === currentSongIndex);
-        });
+        // We now call filterSongs to ensure the queue list (which may be showing search results) is updated
+        filterSongs(); 
         
         // Update button states
         shuffleBtn.classList.toggle('active', isShuffled);
@@ -1005,10 +1101,58 @@ document.addEventListener('DOMContentLoaded', function() {
     audioPlayer.addEventListener('timeupdate', updateProgress);
     audioPlayer.addEventListener('ended', nextSong); 
     
-    // Seek functionality
-    progressContainer.addEventListener('click', setProgress);
+    // Volume control
     volumeSlider.addEventListener('input', setVolume);
     
+    // NEW: Search input listener
+    searchInput.addEventListener('input', filterSongs);
+
+    // Advanced: Progress Bar Dragging/Seeking Implementation (Replacing simple click)
+    progressContainer.addEventListener('mousedown', (e) => {
+        e.preventDefault(); // Prevent text selection
+        isSeeking = true;
+        pauseSong(); // Pause while actively seeking
+        
+        // Calculate the initial click position
+        const rect = progressContainer.getBoundingClientRect();
+        const width = rect.width;
+        const clickX = e.clientX - rect.left;
+        
+        const duration = audioPlayer.duration;
+        if (isFinite(duration) && duration > 0) {
+            audioPlayer.currentTime = (clickX / width) * duration;
+            updateProgress();
+        }
+    });
+
+    document.addEventListener('mousemove', (e) => {
+        if (!isSeeking) return;
+        
+        const rect = progressContainer.getBoundingClientRect();
+        const width = rect.width;
+        let clickX = e.clientX - rect.left;
+        
+        // Clamp clickX within the container bounds (0 to width)
+        clickX = Math.min(Math.max(0, clickX), width);
+        
+        const duration = audioPlayer.duration;
+        if (isFinite(duration) && duration > 0) {
+            // Calculate new time based on mouse position
+            const newTime = (clickX / width) * duration;
+            audioPlayer.currentTime = newTime;
+            updateProgress(); // Immediately update the visual bar
+        }
+    });
+
+    document.addEventListener('mouseup', () => {
+        if (isSeeking) {
+            isSeeking = false;
+            if (audioPlayer.src) { // Resume playing if a song is loaded
+                playSong();
+            }
+        }
+    });
+
     // Keyboard shortcuts for smoother control
     document.addEventListener('keydown', (e) => {
         switch (e.code) {
@@ -1061,7 +1205,7 @@ document.addEventListener('DOMContentLoaded', function() {
         setVolume.call(volumeSlider);
         // Load the first song
         loadSong(currentSongIndex);
-        // Ensure initial state is rendered
+        // Ensure initial state is rendered (which calls filterSongs/renderQueue)
         updatePlayerState();
     }
 
@@ -1072,5 +1216,3 @@ document.addEventListener('DOMContentLoaded', function() {
 
 </body>
 </html>
-
-
