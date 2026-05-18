@@ -1,0 +1,166 @@
+name: CI/CD for Shopping Site (Frontend + Backend)
+
+on:
+  push:
+    branches:
+      - main
+
+env:
+  AWS_REGION: ap-northeast-1
+  ECR_REGISTRY: ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.ap-northeast-1.amazonaws.com
+  FRONTEND_SERVICES: "main electronics phones computers earphones googlemusic googlepay googleclothes googlegrocery"
+  BACKEND_SERVICE: "backend"
+  ARGOCD_SERVER: ${{ secrets.ARGOCD_SERVER }}         # e.g. argocd.yourdomain.com or IP:port
+  ARGOCD_APP_FRONTEND: "shopping-site-frontend"       # ArgoCD Application name for frontend
+  ARGOCD_APP_BACKEND: "shopping-site-backend"         # ArgoCD Application name for backend
+
+permissions:
+  contents: write
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      # ─────────────────────────────────────────────
+      # 1. Checkout
+      # ─────────────────────────────────────────────
+      - name: 🧾 Checkout repository
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GIT_PAT }}
+
+      # ─────────────────────────────────────────────
+      # 2. AWS credentials + ECR login
+      # ─────────────────────────────────────────────
+      - name: 🔧 Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: 📦 Login to Amazon ECR
+        uses: aws-actions/amazon-ecr-login@v2
+
+      # ─────────────────────────────────────────────
+      # 3. Build & push Docker images, patch YAML
+      # ─────────────────────────────────────────────
+      - name: 🛠 Build and Push Docker Images
+        run: |
+          set -e
+          IMAGE_TAG="${GITHUB_SHA}"
+
+          # --- Frontend Services ---
+          for service in $FRONTEND_SERVICES; do
+            FOLDER="frontend/$service"
+            REPO_NAME="shopping-site-$service"
+            IMAGE_URI="$ECR_REGISTRY/$REPO_NAME:$IMAGE_TAG"
+
+            if [ ! -f "$FOLDER/Dockerfile" ]; then
+              echo "⚠️ No Dockerfile in $FOLDER, skipping..."
+              continue
+            fi
+
+            echo "🚀 Building $service..."
+            aws ecr describe-repositories --repository-names "$REPO_NAME" >/dev/null 2>&1 || \
+              aws ecr create-repository --repository-name "$REPO_NAME"
+
+            docker build -t "$IMAGE_URI" "$FOLDER"
+            docker push "$IMAGE_URI"
+
+            # Patch deployment.yml so ArgoCD picks up the new tag
+            sed -i "s|^\(\s*image:\s*\).*|\1$IMAGE_URI|" "$FOLDER/deployment.yml"
+          done
+
+          # --- Backend Service ---
+          FOLDER="backend"
+          REPO_NAME="shopping-site-backend"
+          IMAGE_URI="$ECR_REGISTRY/$REPO_NAME:$IMAGE_TAG"
+
+          echo "🚀 Building backend..."
+          aws ecr describe-repositories --repository-names "$REPO_NAME" >/dev/null 2>&1 || \
+            aws ecr create-repository --repository-name "$REPO_NAME"
+
+          docker build -t "$IMAGE_URI" "$FOLDER"
+          docker push "$IMAGE_URI"
+
+          sed -i "s|^\(\s*image:\s*\).*|\1$IMAGE_URI|" "$FOLDER/backend-deployment.yml"
+
+      # ─────────────────────────────────────────────
+      # 4. Commit patched YAML back to Git
+      #    ArgoCD watches this repo – the commit is
+      #    the GitOps "source of truth" trigger.
+      # ─────────────────────────────────────────────
+      - name: 🔄 Commit updated YAML files
+        run: |
+          git config --global user.name "GitHub Actions"
+          git config --global user.email "actions@github.com"
+
+          git remote set-url origin https://x-access-token:${{ secrets.GIT_PAT }}@github.com/${{ github.repository }}
+
+          git add $(find frontend -name "deployment.yml") backend/backend-deployment.yml
+
+          git diff --cached --quiet && echo "⚠️ No YAML changes to commit" && exit 0
+
+          git commit -m "🔄 Update image tags after build [skip ci]"
+
+          git pull --rebase origin main
+          git push origin main
+
+      # ─────────────────────────────────────────────
+      # 5. Install ArgoCD CLI
+      # ─────────────────────────────────────────────
+      - name: 🔽 Install ArgoCD CLI
+        run: |
+          curl -sSL -o /usr/local/bin/argocd \
+            https://github.com/argoproj/argo-cd/releases/latest/download/argocd-linux-amd64
+          chmod +x /usr/local/bin/argocd
+
+      # ─────────────────────────────────────────────
+      # 6. Login to ArgoCD
+      # ─────────────────────────────────────────────
+      - name: 🔐 Login to ArgoCD
+        run: |
+          argocd login "$ARGOCD_SERVER" \
+            --username "${{ secrets.ARGOCD_USERNAME }}" \
+            --password "${{ secrets.ARGOCD_PASSWORD }}" \
+            --insecure   # remove if ArgoCD uses a valid TLS cert
+
+      # ─────────────────────────────────────────────
+      # 7. Sync ArgoCD Applications
+      #    ArgoCD will diff the updated YAMLs in Git
+      #    and apply only what changed.
+      # ─────────────────────────────────────────────
+      - name: 🚀 Sync Frontend App via ArgoCD
+        if: ${{ !contains(github.event.head_commit.message, '[skip ci]') }}
+        run: |
+          argocd app sync "$ARGOCD_APP_FRONTEND" \
+            --force \
+            --prune \
+            --timeout 180
+          argocd app wait "$ARGOCD_APP_FRONTEND" \
+            --health \
+            --timeout 300
+
+      - name: 🚀 Sync Backend App via ArgoCD
+        if: ${{ !contains(github.event.head_commit.message, '[skip ci]') }}
+        run: |
+          argocd app sync "$ARGOCD_APP_BACKEND" \
+            --force \
+            --prune \
+            --timeout 180
+          argocd app wait "$ARGOCD_APP_BACKEND" \
+            --health \
+            --timeout 300
+
+      # ─────────────────────────────────────────────
+      # 8. Print rollout status (optional diagnostics)
+      # ─────────────────────────────────────────────
+      - name: 📊 ArgoCD App Status
+        if: always()
+        run: |
+          echo "=== Frontend ===" 
+          argocd app get "$ARGOCD_APP_FRONTEND" || true
+          echo "=== Backend ==="
+          argocd app get "$ARGOCD_APP_BACKEND"  || true

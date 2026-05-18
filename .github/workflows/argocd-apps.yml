@@ -1,0 +1,66 @@
+# ─────────────────────────────────────────────────────────
+# ArgoCD Application — Frontend (all 9 services)
+#
+# Apply once:  kubectl apply -f argocd-apps.yml -n argocd
+#
+# ArgoCD will watch the "frontend/" path in your Git repo
+# and sync any deployment.yml changes automatically (or on
+# manual/CI-triggered sync).
+# ─────────────────────────────────────────────────────────
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: shopping-site-frontend
+  namespace: argocd
+  annotations:
+    # Notify Slack / webhook on sync (optional)
+    # notifications.argoproj.io/subscribe.on-sync-succeeded.slack: deployments
+spec:
+  project: default
+
+  source:
+    repoURL: https://github.com/abinashkumar19/google-store-DevOps-project.git
+    targetRevision: main
+    # Watches ALL deployment.yml files under every frontend sub-folder
+    path: frontend
+
+  destination:
+    server: https://kubernetes.default.svc   # in-cluster; change if remote
+    namespace: shopping-site                  # target namespace on the cluster
+
+  syncPolicy:
+    automated:
+      prune: true       # remove resources deleted from Git
+      selfHeal: true    # revert manual kubectl edits
+    syncOptions:
+      - CreateNamespace=true    # auto-create namespace if missing
+      - ApplyOutOfSyncOnly=true # only apply changed resources
+
+---
+# ─────────────────────────────────────────────────────────
+# ArgoCD Application — Backend
+# ─────────────────────────────────────────────────────────
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: shopping-site-backend
+  namespace: argocd
+spec:
+  project: default
+
+  source:
+    repoURL: https://github.com/abinashkumar19/google-store-DevOps-project.git
+    targetRevision: main
+    path: backend
+
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: shopping-site
+
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+      - ApplyOutOfSyncOnly=true
