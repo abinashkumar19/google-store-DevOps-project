@@ -15,7 +15,7 @@ eksctl version
 ## Create EKS Cluster
 
 ``` bash
-eksctl create cluster --name google   --region ap-northeast-1  --node-type t2.medium   --nodes-min 2   --nodes-max 2
+eksctl create cluster --name google --region ap-northeast-1 --node-type t3.medium --nodes 2
 ```
 
 ## Install kubectl
