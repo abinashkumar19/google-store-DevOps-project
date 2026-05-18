@@ -1,0 +1,258 @@
+# ============================================================
+#  ArgoCD Application manifests — Shopping Site
+#  Apply once with:  kubectl apply -f argocd/apps/
+#
+#  After applying, ArgoCD auto-syncs on every git push
+#  (the CI/CD workflow above also triggers argocd app sync
+#   as a belt-and-suspenders approach).
+# ============================================================
+
+# ── main ────────────────────────────────────────────────────
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: shopping-site-main
+  namespace: argocd
+  labels:
+    app.kubernetes.io/part-of: shopping-site
+    service-type: frontend
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/YOUR_ORG/YOUR_REPO   # ← replace
+    targetRevision: main
+    path: frontend/main
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: main
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true   # auto-create namespace if missing
+---
+# ── electronics ─────────────────────────────────────────────
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: shopping-site-electronics
+  namespace: argocd
+  labels:
+    app.kubernetes.io/part-of: shopping-site
+    service-type: frontend
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/YOUR_ORG/YOUR_REPO
+    targetRevision: main
+    path: frontend/electronics
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: electronics
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+---
+# ── phones ──────────────────────────────────────────────────
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: shopping-site-phones
+  namespace: argocd
+  labels:
+    app.kubernetes.io/part-of: shopping-site
+    service-type: frontend
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/YOUR_ORG/YOUR_REPO
+    targetRevision: main
+    path: frontend/phones
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: phones
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+---
+# ── computers ───────────────────────────────────────────────
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: shopping-site-computers
+  namespace: argocd
+  labels:
+    app.kubernetes.io/part-of: shopping-site
+    service-type: frontend
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/YOUR_ORG/YOUR_REPO
+    targetRevision: main
+    path: frontend/computers
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: computers
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+---
+# ── earphones ───────────────────────────────────────────────
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: shopping-site-earphones
+  namespace: argocd
+  labels:
+    app.kubernetes.io/part-of: shopping-site
+    service-type: frontend
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/YOUR_ORG/YOUR_REPO
+    targetRevision: main
+    path: frontend/earphones
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: earphones
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+---
+# ── googlemusic ─────────────────────────────────────────────
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: shopping-site-googlemusic
+  namespace: argocd
+  labels:
+    app.kubernetes.io/part-of: shopping-site
+    service-type: frontend
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/YOUR_ORG/YOUR_REPO
+    targetRevision: main
+    path: frontend/googlemusic
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: googlemusic
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+---
+# ── googlepay ───────────────────────────────────────────────
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: shopping-site-googlepay
+  namespace: argocd
+  labels:
+    app.kubernetes.io/part-of: shopping-site
+    service-type: frontend
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/YOUR_ORG/YOUR_REPO
+    targetRevision: main
+    path: frontend/googlepay
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: googlepay
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+---
+# ── googleclothes ───────────────────────────────────────────
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: shopping-site-googleclothes
+  namespace: argocd
+  labels:
+    app.kubernetes.io/part-of: shopping-site
+    service-type: frontend
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/YOUR_ORG/YOUR_REPO
+    targetRevision: main
+    path: frontend/googleclothes
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: googleclothes
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+---
+# ── googlegrocery ───────────────────────────────────────────
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: shopping-site-googlegrocery
+  namespace: argocd
+  labels:
+    app.kubernetes.io/part-of: shopping-site
+    service-type: frontend
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/YOUR_ORG/YOUR_REPO
+    targetRevision: main
+    path: frontend/googlegrocery
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: googlegrocery
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+---
+# ── backend ─────────────────────────────────────────────────
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: shopping-site-backend
+  namespace: argocd
+  labels:
+    app.kubernetes.io/part-of: shopping-site
+    service-type: backend
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/YOUR_ORG/YOUR_REPO
+    targetRevision: main
+    path: backend
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: backend
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
