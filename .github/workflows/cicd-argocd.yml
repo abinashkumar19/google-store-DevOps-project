@@ -10,9 +10,10 @@ env:
   ECR_REGISTRY: ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.ap-northeast-1.amazonaws.com
   FRONTEND_SERVICES: "main electronics phones computers earphones googlemusic googlepay googleclothes googlegrocery"
   BACKEND_SERVICE: "backend"
-  ARGOCD_SERVER: ${{ secrets.ARGOCD_SERVER }}         # e.g. argocd.yourdomain.com or IP:port
-  ARGOCD_APP_FRONTEND: "shopping-site-frontend"       # ArgoCD Application name for frontend
-  ARGOCD_APP_BACKEND: "shopping-site-backend"         # ArgoCD Application name for backend
+  ARGOCD_SERVER: ${{ secrets.ARGOCD_SERVER }}
+  # These must match exactly what "argocd app list" shows on your cluster
+  ARGOCD_FRONTEND_APPS: "main electronics phones computers earphones googlemusic googlepay googleclothes googlegrocery"
+  ARGOCD_APP_BACKEND: "backend"
 
 permissions:
   contents: write
@@ -69,7 +70,7 @@ jobs:
             docker build -t "$IMAGE_URI" "$FOLDER"
             docker push "$IMAGE_URI"
 
-            # Patch deployment.yml so ArgoCD picks up the new tag
+            # Patch deployment.yml so ArgoCD picks up the new image tag
             sed -i "s|^\(\s*image:\s*\).*|\1$IMAGE_URI|" "$FOLDER/deployment.yml"
           done
 
@@ -88,8 +89,8 @@ jobs:
           sed -i "s|^\(\s*image:\s*\).*|\1$IMAGE_URI|" "$FOLDER/backend-deployment.yml"
 
       # ─────────────────────────────────────────────
-      # 4. Commit patched YAML back to Git
-      #    ArgoCD watches this repo – the commit is
+      # 4. Commit patched YAMLs back to Git
+      #    ArgoCD watches this repo — the commit is
       #    the GitOps "source of truth" trigger.
       # ─────────────────────────────────────────────
       - name: 🔄 Commit updated YAML files
@@ -109,43 +110,81 @@ jobs:
           git push origin main
 
       # ─────────────────────────────────────────────
-      # 5. Install ArgoCD CLI
+      # 5. Validate ArgoCD secrets exist
+      # ─────────────────────────────────────────────
+      - name: ✅ Validate ArgoCD secrets
+        if: ${{ !contains(github.event.head_commit.message, '[skip ci]') }}
+        run: |
+          MISSING=""
+          [ -z "${{ secrets.ARGOCD_SERVER }}"   ] && MISSING="$MISSING ARGOCD_SERVER"
+          [ -z "${{ secrets.ARGOCD_USERNAME }}" ] && MISSING="$MISSING ARGOCD_USERNAME"
+          [ -z "${{ secrets.ARGOCD_PASSWORD }}" ] && MISSING="$MISSING ARGOCD_PASSWORD"
+
+          if [ -n "$MISSING" ]; then
+            echo "❌ Missing required secrets:$MISSING"
+            echo ""
+            echo "👉 Go to: Repo → Settings → Secrets and variables → Actions → New repository secret"
+            echo "   ARGOCD_SERVER   → ELB hostname, e.g. abc123.ap-northeast-1.elb.amazonaws.com"
+            echo "   ARGOCD_USERNAME → admin"
+            echo "   ARGOCD_PASSWORD → kubectl -n argocd get secret argocd-initial-admin-secret -o jsonpath='{.data.password}' | base64 -d"
+            exit 1
+          fi
+
+          echo "✅ All ArgoCD secrets are present."
+
+      # ─────────────────────────────────────────────
+      # 6. Install ArgoCD CLI
       # ─────────────────────────────────────────────
       - name: 🔽 Install ArgoCD CLI
+        if: ${{ !contains(github.event.head_commit.message, '[skip ci]') }}
         run: |
           curl -sSL -o /usr/local/bin/argocd \
             https://github.com/argoproj/argo-cd/releases/latest/download/argocd-linux-amd64
           chmod +x /usr/local/bin/argocd
+          argocd version --client
 
       # ─────────────────────────────────────────────
-      # 6. Login to ArgoCD
+      # 7. Login to ArgoCD
       # ─────────────────────────────────────────────
       - name: 🔐 Login to ArgoCD
-        run: |
-          argocd login "$ARGOCD_SERVER" \
-            --username "${{ secrets.ARGOCD_USERNAME }}" \
-            --password "${{ secrets.ARGOCD_PASSWORD }}" \
-            --insecure   # remove if ArgoCD uses a valid TLS cert
-
-      # ─────────────────────────────────────────────
-      # 7. Sync ArgoCD Applications
-      #    ArgoCD will diff the updated YAMLs in Git
-      #    and apply only what changed.
-      # ─────────────────────────────────────────────
-      - name: 🚀 Sync Frontend App via ArgoCD
         if: ${{ !contains(github.event.head_commit.message, '[skip ci]') }}
         run: |
-          argocd app sync "$ARGOCD_APP_FRONTEND" \
-            --force \
-            --prune \
-            --timeout 180
-          argocd app wait "$ARGOCD_APP_FRONTEND" \
-            --health \
-            --timeout 300
+          argocd login "${{ secrets.ARGOCD_SERVER }}" \
+            --username "${{ secrets.ARGOCD_USERNAME }}" \
+            --password "${{ secrets.ARGOCD_PASSWORD }}" \
+            --insecure
 
+      # ─────────────────────────────────────────────
+      # 8. Sync each Frontend App individually
+      #    Loops over all 9 services matching your
+      #    actual ArgoCD app names (argocd app list)
+      # ─────────────────────────────────────────────
+      - name: 🚀 Sync Frontend Apps via ArgoCD
+        if: ${{ !contains(github.event.head_commit.message, '[skip ci]') }}
+        run: |
+          for app in $ARGOCD_FRONTEND_APPS; do
+            echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+            echo "🔄 Syncing frontend app: $app"
+            echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+            argocd app sync "$app" \
+              --force \
+              --prune \
+              --timeout 180
+            argocd app wait "$app" \
+              --health \
+              --timeout 300
+            echo "✅ $app synced and healthy"
+          done
+
+      # ─────────────────────────────────────────────
+      # 9. Sync Backend App
+      # ─────────────────────────────────────────────
       - name: 🚀 Sync Backend App via ArgoCD
         if: ${{ !contains(github.event.head_commit.message, '[skip ci]') }}
         run: |
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo "🔄 Syncing backend app: $ARGOCD_APP_BACKEND"
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
           argocd app sync "$ARGOCD_APP_BACKEND" \
             --force \
             --prune \
@@ -153,14 +192,19 @@ jobs:
           argocd app wait "$ARGOCD_APP_BACKEND" \
             --health \
             --timeout 300
+          echo "✅ Backend synced and healthy"
 
       # ─────────────────────────────────────────────
-      # 8. Print rollout status (optional diagnostics)
+      # 10. Print final status of all apps
       # ─────────────────────────────────────────────
       - name: 📊 ArgoCD App Status
         if: always()
         run: |
-          echo "=== Frontend ===" 
-          argocd app get "$ARGOCD_APP_FRONTEND" || true
-          echo "=== Backend ==="
-          argocd app get "$ARGOCD_APP_BACKEND"  || true
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo "📋 Final ArgoCD App Status"
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          for app in $ARGOCD_FRONTEND_APPS $ARGOCD_APP_BACKEND; do
+            echo ""
+            echo "--- $app ---"
+            argocd app get "$app" || true
+          done
