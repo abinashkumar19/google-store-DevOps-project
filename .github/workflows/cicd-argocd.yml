@@ -202,7 +202,7 @@ jobs:
               echo "🔥 Deleting existing ArgoCD app and all its K8s resources: $APP"
               argocd app delete "$APP" --cascade --yes
               echo "⏳ Waiting for $APP resources to be fully removed..."
-              sleep 15
+              sleep 30
               echo "✅ Deleted $APP"
             else
               echo "ℹ️ App '$APP' does not exist yet, skipping delete."
@@ -217,6 +217,7 @@ jobs:
               --sync-policy automated \
               --auto-prune \
               --self-heal \
+              --upsert \
               --insecure
             echo "✅ Recreated $APP"
           }
