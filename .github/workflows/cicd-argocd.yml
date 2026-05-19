@@ -43,7 +43,8 @@ jobs:
         uses: aws-actions/amazon-ecr-login@v2
 
       # ─────────────────────────────────────────────
-      # 3. Delete old ECR images + Build + Push (Parallel)
+      # 3. Delete old ECR images + Build + Push
+      #    All services built IN PARALLEL with &
       # ─────────────────────────────────────────────
       - name: 🗑🛠 Clean ECR + Build + Push (Parallel)
         run: |
@@ -76,6 +77,7 @@ jobs:
             docker push "$IMAGE_URI" -q
             echo "✅ Done: $SERVICE → $IMAGE_URI"
 
+            # Patch deployment YAML
             if [ -f "$FOLDER/deployment.yml" ]; then
               sed -i "s|^\(\s*image:\s*\).*|\1$IMAGE_URI|" "$FOLDER/deployment.yml"
             fi
@@ -84,18 +86,23 @@ jobs:
             fi
           }
 
+          # Launch all frontend builds in parallel
           PIDS=()
           for service in $FRONTEND_SERVICES; do
             build_and_push "$service" "frontend/$service" "shopping-site-$service" &
             PIDS+=($!)
           done
+
+          # Launch backend build in parallel
           build_and_push "backend" "backend" "shopping-site-backend" &
           PIDS+=($!)
 
+          # Wait for all parallel jobs and capture failures
           FAILED=0
           for pid in "${PIDS[@]}"; do
-            wait "$pid" || { echo "❌ Build job failed (pid $pid)"; FAILED=1; }
+            wait "$pid" || { echo "❌ A build job failed (pid $pid)"; FAILED=1; }
           done
+
           [ $FAILED -eq 1 ] && exit 1
           echo "🎉 All builds and pushes complete!"
 
@@ -106,10 +113,15 @@ jobs:
         run: |
           git config --global user.name "GitHub Actions"
           git config --global user.email "actions@github.com"
+
           git remote set-url origin https://x-access-token:${{ secrets.GIT_PAT }}@github.com/${{ github.repository }}
+
           git add $(find frontend -name "deployment.yml") backend/backend-deployment.yml
+
           git diff --cached --quiet && echo "⚠️ No YAML changes to commit" && exit 0
+
           git commit -m "🔄 Update image tags after build [skip ci]"
+
           git pull --rebase origin main
           git push origin main
 
@@ -151,7 +163,8 @@ jobs:
             --insecure
 
       # ─────────────────────────────────────────────
-      # 8. Delete old ArgoCD deployments (Parallel)
+      # 8. Delete ALL old ArgoCD apps in PARALLEL
+      #    No sleep — poll until actually gone
       # ─────────────────────────────────────────────
       - name: 🔥 Delete old ArgoCD deployments (Parallel)
         if: ${{ !contains(github.event.head_commit.message, '[skip ci]') }}
@@ -161,8 +174,9 @@ jobs:
             if argocd app get "$APP" >/dev/null 2>&1; then
               echo "🔥 Deleting $APP..."
               argocd app delete "$APP" --cascade --yes
+              # Poll until gone instead of fixed sleep
               for i in $(seq 1 20); do
-                argocd app get "$APP" >/dev/null 2>&1 || { echo "✅ $APP removed"; return; }
+                argocd app get "$APP" >/dev/null 2>&1 || { echo "✅ $APP fully removed"; return; }
                 sleep 3
               done
               echo "⚠️ $APP deletion timed out, continuing anyway"
@@ -176,11 +190,15 @@ jobs:
             delete_app "$app" &
             PIDS+=($!)
           done
-          for pid in "${PIDS[@]}"; do wait "$pid"; done
+
+          for pid in "${PIDS[@]}"; do
+            wait "$pid"
+          done
+
           echo "🎉 All old ArgoCD apps deleted!"
 
       # ─────────────────────────────────────────────
-      # 9. Recreate ArgoCD apps (Parallel)
+      # 9. Recreate ALL ArgoCD apps in PARALLEL
       # ─────────────────────────────────────────────
       - name: ➕ Recreate ArgoCD apps (Parallel)
         if: ${{ !contains(github.event.head_commit.message, '[skip ci]') }}
@@ -212,14 +230,17 @@ jobs:
 
           FAILED=0
           for pid in "${PIDS[@]}"; do
-            wait "$pid" || { echo "❌ Create failed"; FAILED=1; }
+            wait "$pid" || { echo "❌ A create job failed"; FAILED=1; }
           done
+
           [ $FAILED -eq 1 ] && exit 1
-          echo "📋 Apps after recreation:"
+
+          echo ""
+          echo "📋 ArgoCD apps after recreation:"
           argocd app list
 
       # ─────────────────────────────────────────────
-      # 10. Sync all apps (Parallel)
+      # 10. Sync ALL apps in PARALLEL + wait healthy
       # ─────────────────────────────────────────────
       - name: 🚀 Sync All Apps (Parallel)
         if: ${{ !contains(github.event.head_commit.message, '[skip ci]') }}
@@ -228,7 +249,7 @@ jobs:
             local APP="$1"
             echo "🔄 Syncing $APP..."
             argocd app sync "$APP" --force --prune --timeout 120
-            argocd app wait "$APP" --health --timeout 600
+            argocd app wait "$APP" --health --timeout 240
             echo "✅ $APP healthy"
           }
 
@@ -240,88 +261,409 @@ jobs:
 
           FAILED=0
           for pid in "${PIDS[@]}"; do
-            wait "$pid" || { echo "❌ Sync failed"; FAILED=1; }
+            wait "$pid" || { echo "❌ A sync job failed"; FAILED=1; }
           done
+
           [ $FAILED -eq 1 ] && exit 1
           echo "🎉 All apps synced and healthy!"
 
+      # ═════════════════════════════════════════════
+      # MONITORING — Prometheus + Grafana + Dashboard 1860
+      # ═════════════════════════════════════════════
+
       # ─────────────────────────────────────────────
-      # 11. Install Prometheus + Grafana via ArgoCD
-      #     No separate YAML files needed.
-      #     Dashboard 1860 auto-loaded from grafana.com
+      # 11. Install Helm
       # ─────────────────────────────────────────────
-      - name: 📊 Install Prometheus + Grafana (Dashboard 1860)
+      - name: 🪖 Install Helm
         if: ${{ !contains(github.event.head_commit.message, '[skip ci]') }}
         run: |
-          if argocd app get "monitoring-stack" >/dev/null 2>&1; then
-            echo "✅ monitoring-stack already exists, syncing..."
-            argocd app sync monitoring-stack --timeout 120 || true
-          else
-            echo "➕ Installing Prometheus + Grafana..."
-            argocd app create monitoring-stack \
-              --repo https://prometheus-community.github.io/helm-charts \
-              --helm-chart kube-prometheus-stack \
-              --revision "*" \
-              --helm-set prometheus.prometheusSpec.serviceMonitorSelectorNilUsesHelmValues=false \
-              --helm-set prometheus.prometheusSpec.serviceMonitorSelector="" \
-              --helm-set prometheus.prometheusSpec.serviceMonitorNamespaceSelector="" \
-              --helm-set prometheus.prometheusSpec.podMonitorSelectorNilUsesHelmValues=false \
-              --helm-set prometheus.prometheusSpec.retention=15d \
-              --helm-set nodeExporter.enabled=true \
-              --helm-set kubeStateMetrics.enabled=true \
-              --helm-set alertmanager.enabled=true \
-              --helm-set grafana.enabled=true \
-              --helm-set grafana.adminPassword=admin123 \
-              --helm-set "grafana.service.type=LoadBalancer" \
-              --helm-set grafana.persistence.enabled=true \
-              --helm-set grafana.sidecar.dashboards.enabled=true \
-              --helm-set grafana.sidecar.dashboards.searchNamespace=ALL \
-              --helm-set "grafana.dashboardProviders.dashboardproviders\.yaml.apiVersion=1" \
-              --helm-set "grafana.dashboardProviders.dashboardproviders\.yaml.providers[0].name=default" \
-              --helm-set "grafana.dashboardProviders.dashboardproviders\.yaml.providers[0].orgId=1" \
-              --helm-set "grafana.dashboardProviders.dashboardproviders\.yaml.providers[0].type=file" \
-              --helm-set "grafana.dashboardProviders.dashboardproviders\.yaml.providers[0].disableDeletion=false" \
-              --helm-set "grafana.dashboardProviders.dashboardproviders\.yaml.providers[0].options.path=/var/lib/grafana/dashboards/default" \
-              --helm-set "grafana.dashboards.default.node-exporter-full.gnetId=1860" \
-              --helm-set "grafana.dashboards.default.node-exporter-full.revision=37" \
-              --helm-set "grafana.dashboards.default.node-exporter-full.datasource=Prometheus" \
-              --helm-set "grafana.dashboards.default.kubernetes-cluster.gnetId=3119" \
-              --helm-set "grafana.dashboards.default.kubernetes-cluster.revision=2" \
-              --helm-set "grafana.dashboards.default.kubernetes-cluster.datasource=Prometheus" \
-              --helm-set "grafana.dashboards.default.kubernetes-pods.gnetId=6417" \
-              --helm-set "grafana.dashboards.default.kubernetes-pods.revision=1" \
-              --helm-set "grafana.dashboards.default.kubernetes-pods.datasource=Prometheus" \
-              --dest-server https://kubernetes.default.svc \
-              --dest-namespace monitoring \
-              --sync-policy automated \
-              --auto-prune \
-              --self-heal \
-              --upsert \
-              --insecure
-            echo "✅ Prometheus + Grafana deployed!"
-          fi
-
-          echo "⏳ Waiting for monitoring stack to become healthy..."
-          argocd app wait monitoring-stack --health --timeout 300 || true
-
-          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-          echo "🎉 Grafana is ready!"
-          echo "   Run on EC2 to get URL:"
-          echo "   kubectl get svc monitoring-grafana -n monitoring"
-          echo "   Username:  admin"
-          echo "   Password:  admin123"
-          echo "   ✅ Dashboard 1860 (Node Exporter Full) auto-loaded"
-          echo "   ✅ Dashboard 3119 (Kubernetes Cluster) auto-loaded"
-          echo "   ✅ Dashboard 6417 (Kubernetes Pods)    auto-loaded"
-          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          curl https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
+          helm version
 
       # ─────────────────────────────────────────────
-      # 12. Final status of all ArgoCD apps
+      # 12. Configure kubectl (EKS)
       # ─────────────────────────────────────────────
-      - name: 📋 Final ArgoCD App Status
+      - name: ⚙️ Configure kubectl for EKS
+        if: ${{ !contains(github.event.head_commit.message, '[skip ci]') }}
+        run: |
+          aws eks update-kubeconfig \
+            --region "${{ env.AWS_REGION }}" \
+            --name "${{ secrets.EKS_CLUSTER_NAME }}"
+          kubectl cluster-info
+
+      # ─────────────────────────────────────────────
+      # 13. Create monitoring namespace
+      # ─────────────────────────────────────────────
+      - name: 📁 Create monitoring namespace
+        if: ${{ !contains(github.event.head_commit.message, '[skip ci]') }}
+        run: |
+          kubectl get namespace monitoring >/dev/null 2>&1 \
+            || kubectl create namespace monitoring
+          echo "✅ Namespace 'monitoring' ready"
+
+      # ─────────────────────────────────────────────
+      # 14. Add Helm repos
+      # ─────────────────────────────────────────────
+      - name: 📡 Add Prometheus + Grafana Helm repos
+        if: ${{ !contains(github.event.head_commit.message, '[skip ci]') }}
+        run: |
+          helm repo add prometheus-community https://prometheus-community.github.io/helm-charts
+          helm repo add grafana https://grafana.github.io/helm-charts
+          helm repo update
+          echo "✅ Helm repos updated"
+
+      # ─────────────────────────────────────────────
+      # 15. Deploy kube-prometheus-stack
+      #     Includes: Prometheus, Alertmanager,
+      #     node-exporter, kube-state-metrics,
+      #     Grafana (with dashboard 1860 pre-loaded)
+      # ─────────────────────────────────────────────
+      - name: 📊 Deploy kube-prometheus-stack (Prometheus + Grafana)
+        if: ${{ !contains(github.event.head_commit.message, '[skip ci]') }}
+        run: |
+          # Write Helm values inline
+          cat <<'VALUES' > /tmp/monitoring-values.yaml
+          # ── Prometheus ──────────────────────────────────
+          prometheus:
+            prometheusSpec:
+              retention: 15d
+              # Scrape ALL namespaces (google + monitoring)
+              serviceMonitorSelectorNilUsesHelmValues: false
+              podMonitorSelectorNilUsesHelmValues: false
+              ruleSelectorNilUsesHelmValues: false
+              storageSpec:
+                volumeClaimTemplate:
+                  spec:
+                    accessModes: ["ReadWriteOnce"]
+                    resources:
+                      requests:
+                        storage: 20Gi
+            service:
+              type: ClusterIP
+
+          # ── Alertmanager ─────────────────────────────────
+          alertmanager:
+            alertmanagerSpec:
+              storage:
+                volumeClaimTemplate:
+                  spec:
+                    accessModes: ["ReadWriteOnce"]
+                    resources:
+                      requests:
+                        storage: 5Gi
+
+          # ── Node Exporter ────────────────────────────────
+          nodeExporter:
+            enabled: true
+
+          # ── kube-state-metrics ───────────────────────────
+          kubeStateMetrics:
+            enabled: true
+
+          # ── Grafana ──────────────────────────────────────
+          grafana:
+            enabled: true
+            adminPassword: "admin"
+            service:
+              type: LoadBalancer          # exposes Grafana externally; change to ClusterIP + Ingress if preferred
+            persistence:
+              enabled: true
+              size: 5Gi
+
+            # Pre-provision datasource pointing to Prometheus
+            datasources:
+              datasources.yaml:
+                apiVersion: 1
+                datasources:
+                  - name: Prometheus
+                    type: prometheus
+                    url: http://kube-prometheus-stack-prometheus.monitoring.svc.cluster.local:9090
+                    access: proxy
+                    isDefault: true
+
+            # Auto-import Dashboard 1860 (Node Exporter Full)
+            # and a custom Shopping-Site overview dashboard
+            dashboardProviders:
+              dashboardproviders.yaml:
+                apiVersion: 1
+                providers:
+                  - name: default
+                    orgId: 1
+                    folder: "Shopping Site"
+                    type: file
+                    disableDeletion: false
+                    editable: true
+                    options:
+                      path: /var/lib/grafana/dashboards/default
+
+            # Import dashboard 1860 directly from grafana.com
+            dashboards:
+              default:
+                node-exporter-full:
+                  gnetId: 1860          # Official "Node Exporter Full" dashboard
+                  revision: 37          # Latest stable revision
+                  datasource: Prometheus
+
+                # Kubernetes cluster overview
+                kubernetes-cluster:
+                  gnetId: 7249
+                  revision: 1
+                  datasource: Prometheus
+
+                # Pod / deployment level metrics
+                kubernetes-pods:
+                  gnetId: 6781
+                  revision: 1
+                  datasource: Prometheus
+
+                # Shopping-site custom dashboard (configmap below)
+                shopping-site-overview:
+                  json: |
+                    {
+                      "title": "Shopping Site Overview",
+                      "uid": "shopping-site",
+                      "tags": ["shopping"],
+                      "timezone": "browser",
+                      "schemaVersion": 38,
+                      "version": 1,
+                      "refresh": "30s",
+                      "panels": [
+                        {
+                          "type": "stat",
+                          "title": "Total HTTP Requests/s (all frontends)",
+                          "gridPos": { "x": 0, "y": 0, "w": 6, "h": 4 },
+                          "datasource": "Prometheus",
+                          "targets": [{
+                            "expr": "sum(rate(http_requests_total{namespace='google'}[2m]))",
+                            "legendFormat": "req/s"
+                          }]
+                        },
+                        {
+                          "type": "stat",
+                          "title": "Backend HTTP Requests/s",
+                          "gridPos": { "x": 6, "y": 0, "w": 6, "h": 4 },
+                          "datasource": "Prometheus",
+                          "targets": [{
+                            "expr": "sum(rate(http_requests_total{namespace='google', app='backend'}[2m]))",
+                            "legendFormat": "req/s"
+                          }]
+                        },
+                        {
+                          "type": "stat",
+                          "title": "HTTP 5xx Error Rate",
+                          "gridPos": { "x": 12, "y": 0, "w": 6, "h": 4 },
+                          "datasource": "Prometheus",
+                          "targets": [{
+                            "expr": "sum(rate(http_requests_total{namespace='google', status=~'5..'}[2m]))",
+                            "legendFormat": "errors/s"
+                          }],
+                          "fieldConfig": {
+                            "defaults": { "thresholds": { "steps": [{ "color": "green", "value": 0 }, { "color": "red", "value": 0.1 }] } }
+                          }
+                        },
+                        {
+                          "type": "stat",
+                          "title": "Running Pods (google ns)",
+                          "gridPos": { "x": 18, "y": 0, "w": 6, "h": 4 },
+                          "datasource": "Prometheus",
+                          "targets": [{
+                            "expr": "count(kube_pod_status_phase{namespace='google', phase='Running'})",
+                            "legendFormat": "pods"
+                          }]
+                        },
+                        {
+                          "type": "timeseries",
+                          "title": "HTTP Request Rate per Service",
+                          "gridPos": { "x": 0, "y": 4, "w": 24, "h": 8 },
+                          "datasource": "Prometheus",
+                          "targets": [{
+                            "expr": "sum by (app) (rate(http_requests_total{namespace='google'}[2m]))",
+                            "legendFormat": "{{ app }}"
+                          }]
+                        },
+                        {
+                          "type": "timeseries",
+                          "title": "CPU Usage per Pod (google ns)",
+                          "gridPos": { "x": 0, "y": 12, "w": 12, "h": 8 },
+                          "datasource": "Prometheus",
+                          "targets": [{
+                            "expr": "sum by (pod) (rate(container_cpu_usage_seconds_total{namespace='google', container!=''}[2m]))",
+                            "legendFormat": "{{ pod }}"
+                          }]
+                        },
+                        {
+                          "type": "timeseries",
+                          "title": "Memory Usage per Pod (google ns)",
+                          "gridPos": { "x": 12, "y": 12, "w": 12, "h": 8 },
+                          "datasource": "Prometheus",
+                          "targets": [{
+                            "expr": "sum by (pod) (container_memory_working_set_bytes{namespace='google', container!=''})",
+                            "legendFormat": "{{ pod }}"
+                          }]
+                        },
+                        {
+                          "type": "timeseries",
+                          "title": "Node CPU Usage % (Dashboard 1860 style)",
+                          "gridPos": { "x": 0, "y": 20, "w": 12, "h": 8 },
+                          "datasource": "Prometheus",
+                          "targets": [{
+                            "expr": "100 - (avg by (instance) (rate(node_cpu_seconds_total{mode='idle'}[2m])) * 100)",
+                            "legendFormat": "{{ instance }}"
+                          }]
+                        },
+                        {
+                          "type": "timeseries",
+                          "title": "Node Memory Available",
+                          "gridPos": { "x": 12, "y": 20, "w": 12, "h": 8 },
+                          "datasource": "Prometheus",
+                          "targets": [{
+                            "expr": "node_memory_MemAvailable_bytes",
+                            "legendFormat": "{{ instance }}"
+                          }]
+                        },
+                        {
+                          "type": "timeseries",
+                          "title": "Node Disk I/O",
+                          "gridPos": { "x": 0, "y": 28, "w": 12, "h": 8 },
+                          "datasource": "Prometheus",
+                          "targets": [{
+                            "expr": "rate(node_disk_io_time_seconds_total[2m])",
+                            "legendFormat": "{{ instance }} - {{ device }}"
+                          }]
+                        },
+                        {
+                          "type": "timeseries",
+                          "title": "Node Network I/O",
+                          "gridPos": { "x": 12, "y": 28, "w": 12, "h": 8 },
+                          "datasource": "Prometheus",
+                          "targets": [
+                            {
+                              "expr": "rate(node_network_receive_bytes_total{device!='lo'}[2m])",
+                              "legendFormat": "rx {{ instance }}"
+                            },
+                            {
+                              "expr": "rate(node_network_transmit_bytes_total{device!='lo'}[2m])",
+                              "legendFormat": "tx {{ instance }}"
+                            }
+                          ]
+                        }
+                      ]
+                    }
+          VALUES
+
+          helm upgrade --install kube-prometheus-stack \
+            prometheus-community/kube-prometheus-stack \
+            --namespace monitoring \
+            --values /tmp/monitoring-values.yaml \
+            --wait \
+            --timeout 10m
+          echo "✅ kube-prometheus-stack deployed"
+
+      # ─────────────────────────────────────────────
+      # 16. Create ServiceMonitors so Prometheus
+      #     scrapes the shopping-site pods
+      # ─────────────────────────────────────────────
+      - name: 🔍 Apply ServiceMonitors for shopping-site
+        if: ${{ !contains(github.event.head_commit.message, '[skip ci]') }}
+        run: |
+          cat <<'EOF' | kubectl apply -f -
+          # ── Frontend ServiceMonitor ──────────────────────
+          apiVersion: monitoring.coreos.com/v1
+          kind: ServiceMonitor
+          metadata:
+            name: shopping-site-frontend
+            namespace: monitoring
+            labels:
+              release: kube-prometheus-stack
+          spec:
+            namespaceSelector:
+              matchNames:
+                - google
+            selector:
+              matchLabels:
+                app-type: frontend          # ensure your frontend Services have this label
+            endpoints:
+              - port: http
+                path: /metrics
+                interval: 30s
+          ---
+          # ── Backend ServiceMonitor ───────────────────────
+          apiVersion: monitoring.coreos.com/v1
+          kind: ServiceMonitor
+          metadata:
+            name: shopping-site-backend
+            namespace: monitoring
+            labels:
+              release: kube-prometheus-stack
+          spec:
+            namespaceSelector:
+              matchNames:
+                - google
+            selector:
+              matchLabels:
+                app: backend
+            endpoints:
+              - port: http
+                path: /metrics
+                interval: 30s
+          EOF
+          echo "✅ ServiceMonitors applied"
+
+      # ─────────────────────────────────────────────
+      # 17. Print Grafana external URL
+      # ─────────────────────────────────────────────
+      - name: 🌐 Get Grafana LoadBalancer URL
+        if: ${{ !contains(github.event.head_commit.message, '[skip ci]') }}
+        run: |
+          echo "⏳ Waiting for Grafana LoadBalancer IP/hostname..."
+          for i in $(seq 1 24); do
+            GRAFANA_URL=$(kubectl get svc kube-prometheus-stack-grafana \
+              -n monitoring \
+              -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' 2>/dev/null)
+            [ -z "$GRAFANA_URL" ] && \
+              GRAFANA_URL=$(kubectl get svc kube-prometheus-stack-grafana \
+                -n monitoring \
+                -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>/dev/null)
+            if [ -n "$GRAFANA_URL" ]; then
+              echo ""
+              echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+              echo "📊 Grafana is live at:  http://$GRAFANA_URL"
+              echo "   Username : admin"
+              echo "   Password : admin"
+              echo ""
+              echo "   Pre-loaded dashboards:"
+              echo "   🔹 Node Exporter Full   → Dashboard ID 1860"
+              echo "   🔹 Kubernetes Cluster   → Dashboard ID 7249"
+              echo "   🔹 Kubernetes Pods      → Dashboard ID 6781"
+              echo "   🔹 Shopping Site Overview (custom)"
+              echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+              break
+            fi
+            echo "  ⏳ Not ready yet ($i/24), retrying in 10s..."
+            sleep 10
+          done
+          [ -z "$GRAFANA_URL" ] && echo "⚠️ LoadBalancer URL not available yet — check manually with: kubectl get svc -n monitoring"
+
+      # ─────────────────────────────────────────────
+      # 18. Final status
+      # ─────────────────────────────────────────────
+      - name: 📊 ArgoCD App Status
         if: always()
         run: |
           echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-          echo "📋 All ArgoCD Apps"
+          echo "📋 Final ArgoCD App Status"
           echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
           argocd app list || true
+
+      - name: 📡 Monitoring Stack Status
+        if: always()
+        run: |
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo "📡 Monitoring Pods"
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          kubectl get pods -n monitoring || true
+          echo ""
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo "🌐 Monitoring Services"
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          kubectl get svc -n monitoring || true
