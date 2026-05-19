@@ -1,0 +1,187 @@
+# ═══════════════════════════════════════════════════════════════
+# ONE FILE — Full Monitoring Stack
+# Installs: Prometheus + Grafana + Node Exporter + Kube State
+#           + Dashboard 1860 (Node Exporter Full) auto-loaded
+#
+# Apply once:
+#   kubectl apply -f monitoring-stack.yml -n argocd
+# ═══════════════════════════════════════════════════════════════
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: monitoring-stack
+  namespace: argocd
+spec:
+  project: default
+  source:
+    repoURL: https://prometheus-community.github.io/helm-charts
+    chart: kube-prometheus-stack
+    targetRevision: "*"
+    helm:
+      releaseName: monitoring
+      values: |
+
+        # ── Prometheus ───────────────────────────────────────────
+        prometheus:
+          prometheusSpec:
+            # Auto-discover ServiceMonitors from ALL namespaces
+            serviceMonitorSelectorNilUsesHelmValues: false
+            serviceMonitorSelector: {}
+            serviceMonitorNamespaceSelector: {}
+            podMonitorSelectorNilUsesHelmValues: false
+            podMonitorSelector: {}
+            podMonitorNamespaceSelector: {}
+            retention: 15d
+            storageSpec:
+              volumeClaimTemplate:
+                spec:
+                  accessModes: ["ReadWriteOnce"]
+                  resources:
+                    requests:
+                      storage: 10Gi
+
+        # ── Node Exporter ────────────────────────────────────────
+        nodeExporter:
+          enabled: true
+
+        # ── Kube State Metrics ───────────────────────────────────
+        kubeStateMetrics:
+          enabled: true
+
+        # ── Alert Manager ────────────────────────────────────────
+        alertmanager:
+          enabled: true
+
+        # ── Grafana ──────────────────────────────────────────────
+        grafana:
+          enabled: true
+          adminPassword: "admin123"
+
+          service:
+            type: LoadBalancer
+
+          persistence:
+            enabled: true
+            size: 5Gi
+
+          # Sidecar auto-loads dashboards from ConfigMaps
+          sidecar:
+            dashboards:
+              enabled: true
+              label: grafana_dashboard
+              labelValue: "1"
+              searchNamespace: ALL
+              folder: /tmp/dashboards
+              folderAnnotation: grafana_folder
+              provider:
+                foldersFromFilesStructure: true
+            datasources:
+              enabled: true
+              label: grafana_datasource
+              labelValue: "1"
+              searchNamespace: ALL
+
+          # Pre-configure Prometheus as default datasource
+          datasources:
+            datasources.yaml:
+              apiVersion: 1
+              datasources:
+                - name: Prometheus
+                  type: prometheus
+                  url: http://monitoring-kube-prometheus-prometheus:9090
+                  access: proxy
+                  isDefault: true
+                  editable: true
+
+          # ── Dashboard 1860 (Node Exporter Full) ─────────────
+          # Grafana fetches it from grafana.com at startup
+          dashboardProviders:
+            dashboardproviders.yaml:
+              apiVersion: 1
+              providers:
+                - name: default
+                  orgId: 1
+                  folder: "Shopping Site"
+                  type: file
+                  disableDeletion: false
+                  editable: true
+                  options:
+                    path: /var/lib/grafana/dashboards/default
+
+          dashboards:
+            default:
+              # Dashboard 1860 — Node Exporter Full (auto-downloaded from grafana.com)
+              node-exporter-full:
+                gnetId: 1860
+                revision: 37
+                datasource: Prometheus
+
+              # Dashboard 3119 — Kubernetes cluster monitoring
+              kubernetes-cluster:
+                gnetId: 3119
+                revision: 2
+                datasource: Prometheus
+
+              # Dashboard 6417 — Kubernetes pods
+              kubernetes-pods:
+                gnetId: 6417
+                revision: 1
+                datasource: Prometheus
+
+              # Dashboard 15760 — Kubernetes views
+              kubernetes-views:
+                gnetId: 15760
+                revision: 28
+                datasource: Prometheus
+
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: monitoring
+
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+      - ServerSideApply=true
+
+---
+# ── ServiceMonitor — scrape all shopping-site services ────────
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: shopping-site-monitor
+  namespace: monitoring
+  labels:
+    release: monitoring
+spec:
+  namespaceSelector:
+    matchNames:
+      - google
+  selector:
+    matchLabels: {}
+  endpoints:
+    - port: http
+      path: /metrics
+      interval: 15s
+
+---
+# ── PodMonitor — scrape all pods in google namespace ──────────
+apiVersion: monitoring.coreos.com/v1
+kind: PodMonitor
+metadata:
+  name: shopping-site-pods
+  namespace: monitoring
+  labels:
+    release: monitoring
+spec:
+  namespaceSelector:
+    matchNames:
+      - google
+  selector:
+    matchLabels: {}
+  podMetricsEndpoints:
+    - port: http
+      path: /metrics
+      interval: 15s

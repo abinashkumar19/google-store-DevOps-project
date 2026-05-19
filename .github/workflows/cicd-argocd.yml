@@ -1,0 +1,355 @@
+name: CI/CD for Shopping Site (Frontend + Backend)
+
+on:
+  push:
+    branches:
+      - main
+
+env:
+  AWS_REGION: ap-northeast-1
+  ECR_REGISTRY: ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.ap-northeast-1.amazonaws.com
+  FRONTEND_SERVICES: "main electronics phones computers earphones googlemusic googlepay googleclothes googlegrocery"
+  ARGOCD_SERVER: ${{ secrets.ARGOCD_SERVER }}
+  ARGOCD_FRONTEND_APPS: "main electronics phones computers earphones googlemusic googlepay googleclothes googlegrocery"
+  ARGOCD_APP_BACKEND: "backend"
+
+permissions:
+  contents: write
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      # ─────────────────────────────────────────────
+      # 1. Checkout
+      # ─────────────────────────────────────────────
+      - name: 🧾 Checkout repository
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GIT_PAT }}
+
+      # ─────────────────────────────────────────────
+      # 2. AWS credentials + ECR login
+      # ─────────────────────────────────────────────
+      - name: 🔧 Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: 📦 Login to Amazon ECR
+        uses: aws-actions/amazon-ecr-login@v2
+
+      # ─────────────────────────────────────────────
+      # 3. Delete old ECR images + Build + Push
+      #    All services built IN PARALLEL with & 
+      # ─────────────────────────────────────────────
+      - name: 🗑🛠 Clean ECR + Build + Push (Parallel)
+        run: |
+          set -e
+          IMAGE_TAG="${GITHUB_SHA}"
+
+          build_and_push() {
+            local SERVICE="$1"
+            local FOLDER="$2"
+            local REPO_NAME="$3"
+            local IMAGE_URI="$ECR_REGISTRY/$REPO_NAME:$IMAGE_TAG"
+
+            # Delete old images
+            if aws ecr describe-repositories --repository-names "$REPO_NAME" >/dev/null 2>&1; then
+              IMAGE_IDS=$(aws ecr list-images --repository-name "$REPO_NAME" --query 'imageIds[*]' --output json)
+              if [ "$IMAGE_IDS" != "[]" ] && [ -n "$IMAGE_IDS" ]; then
+                aws ecr batch-delete-image --repository-name "$REPO_NAME" --image-ids "$IMAGE_IDS" >/dev/null
+                echo "🗑 Cleared $REPO_NAME"
+              fi
+            else
+              aws ecr create-repository --repository-name "$REPO_NAME" >/dev/null
+            fi
+
+            if [ ! -f "$FOLDER/Dockerfile" ]; then
+              echo "⚠️ No Dockerfile in $FOLDER, skipping $SERVICE"
+              return
+            fi
+
+            docker build -t "$IMAGE_URI" "$FOLDER" -q
+            docker push "$IMAGE_URI" -q
+            echo "✅ Done: $SERVICE → $IMAGE_URI"
+
+            # Patch deployment YAML
+            if [ -f "$FOLDER/deployment.yml" ]; then
+              sed -i "s|^\(\s*image:\s*\).*|\1$IMAGE_URI|" "$FOLDER/deployment.yml"
+            fi
+            if [ -f "$FOLDER/backend-deployment.yml" ]; then
+              sed -i "s|^\(\s*image:\s*\).*|\1$IMAGE_URI|" "$FOLDER/backend-deployment.yml"
+            fi
+          }
+
+          # Launch all frontend builds in parallel
+          PIDS=()
+          for service in $FRONTEND_SERVICES; do
+            build_and_push "$service" "frontend/$service" "shopping-site-$service" &
+            PIDS+=($!)
+          done
+
+          # Launch backend build in parallel
+          build_and_push "backend" "backend" "shopping-site-backend" &
+          PIDS+=($!)
+
+          # Wait for all parallel jobs and capture failures
+          FAILED=0
+          for pid in "${PIDS[@]}"; do
+            wait "$pid" || { echo "❌ A build job failed (pid $pid)"; FAILED=1; }
+          done
+
+          [ $FAILED -eq 1 ] && exit 1
+          echo "🎉 All builds and pushes complete!"
+
+      # ─────────────────────────────────────────────
+      # 4. Commit patched YAMLs back to Git
+      # ─────────────────────────────────────────────
+      - name: 🔄 Commit updated YAML files
+        run: |
+          git config --global user.name "GitHub Actions"
+          git config --global user.email "actions@github.com"
+
+          git remote set-url origin https://x-access-token:${{ secrets.GIT_PAT }}@github.com/${{ github.repository }}
+
+          git add $(find frontend -name "deployment.yml") backend/backend-deployment.yml
+
+          git diff --cached --quiet && echo "⚠️ No YAML changes to commit" && exit 0
+
+          git commit -m "🔄 Update image tags after build [skip ci]"
+
+          git pull --rebase origin main
+          git push origin main
+
+      # ─────────────────────────────────────────────
+      # 5. Validate ArgoCD secrets
+      # ─────────────────────────────────────────────
+      - name: ✅ Validate ArgoCD secrets
+        if: ${{ !contains(github.event.head_commit.message, '[skip ci]') }}
+        run: |
+          MISSING=""
+          [ -z "${{ secrets.ARGOCD_SERVER }}"   ] && MISSING="$MISSING ARGOCD_SERVER"
+          [ -z "${{ secrets.ARGOCD_USERNAME }}" ] && MISSING="$MISSING ARGOCD_USERNAME"
+          [ -z "${{ secrets.ARGOCD_PASSWORD }}" ] && MISSING="$MISSING ARGOCD_PASSWORD"
+          if [ -n "$MISSING" ]; then
+            echo "❌ Missing secrets:$MISSING"
+            exit 1
+          fi
+          echo "✅ All ArgoCD secrets present."
+
+      # ─────────────────────────────────────────────
+      # 6. Install ArgoCD CLI
+      # ─────────────────────────────────────────────
+      - name: 🔽 Install ArgoCD CLI
+        if: ${{ !contains(github.event.head_commit.message, '[skip ci]') }}
+        run: |
+          curl -sSL -o /usr/local/bin/argocd \
+            https://github.com/argoproj/argo-cd/releases/latest/download/argocd-linux-amd64
+          chmod +x /usr/local/bin/argocd
+
+      # ─────────────────────────────────────────────
+      # 7. Login to ArgoCD
+      # ─────────────────────────────────────────────
+      - name: 🔐 Login to ArgoCD
+        if: ${{ !contains(github.event.head_commit.message, '[skip ci]') }}
+        run: |
+          argocd login "${{ secrets.ARGOCD_SERVER }}" \
+            --username "${{ secrets.ARGOCD_USERNAME }}" \
+            --password "${{ secrets.ARGOCD_PASSWORD }}" \
+            --insecure
+
+      # ─────────────────────────────────────────────
+      # 8. Delete ALL old ArgoCD apps in PARALLEL
+      #    No sleep — poll until actually gone
+      # ─────────────────────────────────────────────
+      - name: 🔥 Delete old ArgoCD deployments (Parallel)
+        if: ${{ !contains(github.event.head_commit.message, '[skip ci]') }}
+        run: |
+          delete_app() {
+            local APP="$1"
+            if argocd app get "$APP" >/dev/null 2>&1; then
+              echo "🔥 Deleting $APP..."
+              argocd app delete "$APP" --cascade --yes
+              # Poll until gone instead of fixed sleep
+              for i in $(seq 1 20); do
+                argocd app get "$APP" >/dev/null 2>&1 || { echo "✅ $APP fully removed"; return; }
+                sleep 3
+              done
+              echo "⚠️ $APP deletion timed out, continuing anyway"
+            else
+              echo "ℹ️ $APP does not exist, skipping."
+            fi
+          }
+
+          PIDS=()
+          for app in $ARGOCD_FRONTEND_APPS $ARGOCD_APP_BACKEND; do
+            delete_app "$app" &
+            PIDS+=($!)
+          done
+
+          for pid in "${PIDS[@]}"; do
+            wait "$pid"
+          done
+
+          echo "🎉 All old ArgoCD apps deleted!"
+
+      # ─────────────────────────────────────────────
+      # 9. Recreate ALL ArgoCD apps in PARALLEL
+      # ─────────────────────────────────────────────
+      - name: ➕ Recreate ArgoCD apps (Parallel)
+        if: ${{ !contains(github.event.head_commit.message, '[skip ci]') }}
+        run: |
+          create_app() {
+            local APP="$1"
+            local PATH_IN_REPO="$2"
+            echo "➕ Creating $APP..."
+            argocd app create "$APP" \
+              --repo "https://github.com/${{ github.repository }}.git" \
+              --path "$PATH_IN_REPO" \
+              --dest-server https://kubernetes.default.svc \
+              --dest-namespace google \
+              --sync-policy automated \
+              --auto-prune \
+              --self-heal \
+              --upsert \
+              --insecure
+            echo "✅ Created $APP"
+          }
+
+          PIDS=()
+          for service in main electronics phones computers earphones googlemusic googlepay googleclothes googlegrocery; do
+            create_app "$service" "frontend/$service" &
+            PIDS+=($!)
+          done
+          create_app "backend" "backend" &
+          PIDS+=($!)
+
+          FAILED=0
+          for pid in "${PIDS[@]}"; do
+            wait "$pid" || { echo "❌ A create job failed"; FAILED=1; }
+          done
+
+          [ $FAILED -eq 1 ] && exit 1
+
+          echo ""
+          echo "📋 ArgoCD apps after recreation:"
+          argocd app list
+
+      # ─────────────────────────────────────────────
+      # 10. Sync ALL apps in PARALLEL + wait healthy
+      # ─────────────────────────────────────────────
+      - name: 🚀 Sync All Apps (Parallel)
+        if: ${{ !contains(github.event.head_commit.message, '[skip ci]') }}
+        run: |
+          sync_app() {
+            local APP="$1"
+            echo "🔄 Syncing $APP..."
+            argocd app sync "$APP" --force --prune --timeout 120
+            argocd app wait "$APP" --health --timeout 600
+            echo "✅ $APP healthy"
+          }
+
+          PIDS=()
+          for app in $ARGOCD_FRONTEND_APPS $ARGOCD_APP_BACKEND; do
+            sync_app "$app" &
+            PIDS+=($!)
+          done
+
+          FAILED=0
+          for pid in "${PIDS[@]}"; do
+            wait "$pid" || { echo "❌ A sync job failed"; FAILED=1; }
+          done
+
+          [ $FAILED -eq 1 ] && exit 1
+          echo "🎉 All apps synced and healthy!"
+
+      # ─────────────────────────────────────────────
+      # 11. Final status
+      # ─────────────────────────────────────────────
+      - name: 📊 ArgoCD App Status
+        if: always()
+        run: |
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo "📋 Final ArgoCD App Status"
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          argocd app list || true
+
+      # ─────────────────────────────────────────────
+      # 12. Deploy full monitoring stack via ArgoCD
+      #     Prometheus + Grafana + Dashboard 1860
+      #     Idempotent — safe to run every push
+      # ─────────────────────────────────────────────
+      - name: 📊 Deploy Monitoring Stack (Prometheus + Grafana)
+        if: ${{ !contains(github.event.head_commit.message, '[skip ci]') }}
+        run: |
+          if argocd app get "monitoring-stack" >/dev/null 2>&1; then
+            echo "✅ monitoring-stack already exists, syncing latest..."
+            argocd app sync monitoring-stack --timeout 120 || true
+          else
+            echo "➕ Deploying full monitoring stack..."
+            argocd app create monitoring-stack \
+              --repo https://prometheus-community.github.io/helm-charts \
+              --helm-chart kube-prometheus-stack \
+              --revision "*" \
+              --helm-set prometheus.prometheusSpec.serviceMonitorSelectorNilUsesHelmValues=false \
+              --helm-set grafana.enabled=true \
+              --helm-set grafana.adminPassword=admin123 \
+              --helm-set "grafana.service.type=LoadBalancer" \
+              --helm-set grafana.persistence.enabled=true \
+              --helm-set grafana.sidecar.dashboards.enabled=true \
+              --helm-set grafana.sidecar.dashboards.searchNamespace=ALL \
+              --helm-set "grafana.dashboards.default.node-exporter-full.gnetId=1860" \
+              --helm-set "grafana.dashboards.default.node-exporter-full.revision=37" \
+              --helm-set "grafana.dashboards.default.node-exporter-full.datasource=Prometheus" \
+              --helm-set "grafana.dashboards.default.kubernetes-cluster.gnetId=3119" \
+              --helm-set "grafana.dashboards.default.kubernetes-cluster.revision=2" \
+              --helm-set "grafana.dashboards.default.kubernetes-cluster.datasource=Prometheus" \
+              --helm-set "grafana.dashboards.default.kubernetes-pods.gnetId=6417" \
+              --helm-set "grafana.dashboards.default.kubernetes-pods.revision=1" \
+              --helm-set "grafana.dashboards.default.kubernetes-pods.datasource=Prometheus" \
+              --helm-set nodeExporter.enabled=true \
+              --helm-set kubeStateMetrics.enabled=true \
+              --helm-set alertmanager.enabled=true \
+              --dest-server https://kubernetes.default.svc \
+              --dest-namespace monitoring \
+              --sync-policy automated \
+              --auto-prune \
+              --self-heal \
+              --upsert \
+              --insecure
+            echo "✅ Monitoring stack deployed"
+          fi
+
+          echo ""
+          echo "⏳ Waiting for Grafana LoadBalancer URL..."
+          for i in $(seq 1 24); do
+            GRAFANA_URL=$(kubectl get svc monitoring-grafana -n monitoring \
+              -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' 2>/dev/null)
+            if [ -n "$GRAFANA_URL" ]; then
+              echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+              echo "🎉 Grafana is LIVE!"
+              echo "   URL:       http://$GRAFANA_URL"
+              echo "   Username:  admin"
+              echo "   Password:  admin123"
+              echo "   Dashboard: http://$GRAFANA_URL/d/rYdddlPWk/node-exporter-full"
+              echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+              break
+            fi
+            echo "⏳ Still waiting for LB IP... ($i/24)"
+            sleep 15
+          done
+
+      # ─────────────────────────────────────────────
+      # 13. Final status
+      # ─────────────────────────────────────────────
+      - name: 📊 ArgoCD App Status
+        if: always()
+        run: |
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo "📋 Final ArgoCD App Status"
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          argocd app list || true
