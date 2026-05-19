@@ -1,0 +1,108 @@
+# Grafana auto-loads this dashboard via the sidecar
+# Place in: monitoring/grafana/shopping-dashboard.yml
+# ArgoCD applies it → Grafana sidecar picks it up automatically (no restart needed)
+
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: shopping-site-dashboard
+  namespace: monitoring
+  labels:
+    grafana_dashboard: "1"    # sidecar watches this label
+data:
+  shopping-site.json: |
+    {
+      "title": "Shopping Site - All Services",
+      "uid": "shopping-site-overview",
+      "schemaVersion": 36,
+      "refresh": "10s",
+      "time": { "from": "now-1h", "to": "now" },
+      "panels": [
+        {
+          "id": 1,
+          "title": "Pod CPU Usage - All Services",
+          "type": "timeseries",
+          "gridPos": { "x": 0, "y": 0, "w": 12, "h": 8 },
+          "targets": [{
+            "expr": "sum(rate(container_cpu_usage_seconds_total{namespace=\"google\",container!=\"\"}[5m])) by (pod)",
+            "legendFormat": "{{pod}}"
+          }]
+        },
+        {
+          "id": 2,
+          "title": "Pod Memory Usage - All Services",
+          "type": "timeseries",
+          "gridPos": { "x": 12, "y": 0, "w": 12, "h": 8 },
+          "targets": [{
+            "expr": "sum(container_memory_working_set_bytes{namespace=\"google\",container!=\"\"}) by (pod)",
+            "legendFormat": "{{pod}}"
+          }]
+        },
+        {
+          "id": 3,
+          "title": "Running Pods per Service",
+          "type": "stat",
+          "gridPos": { "x": 0, "y": 8, "w": 12, "h": 6 },
+          "targets": [{
+            "expr": "count(kube_pod_status_phase{namespace=\"google\",phase=\"Running\"}) by (pod)",
+            "legendFormat": "{{pod}}"
+          }]
+        },
+        {
+          "id": 4,
+          "title": "HTTP Requests per Second (if exposed)",
+          "type": "timeseries",
+          "gridPos": { "x": 12, "y": 8, "w": 12, "h": 6 },
+          "targets": [{
+            "expr": "sum(rate(http_requests_total{namespace=\"google\"}[1m])) by (service)",
+            "legendFormat": "{{service}}"
+          }]
+        },
+        {
+          "id": 5,
+          "title": "Pod Restarts",
+          "type": "stat",
+          "gridPos": { "x": 0, "y": 14, "w": 8, "h": 6 },
+          "targets": [{
+            "expr": "sum(kube_pod_container_status_restarts_total{namespace=\"google\"}) by (pod)",
+            "legendFormat": "{{pod}}"
+          }]
+        },
+        {
+          "id": 6,
+          "title": "Node CPU Usage",
+          "type": "gauge",
+          "gridPos": { "x": 8, "y": 14, "w": 8, "h": 6 },
+          "targets": [{
+            "expr": "100 - (avg by(instance)(rate(node_cpu_seconds_total{mode=\"idle\"}[5m])) * 100)",
+            "legendFormat": "{{instance}}"
+          }]
+        },
+        {
+          "id": 7,
+          "title": "Node Memory Usage %",
+          "type": "gauge",
+          "gridPos": { "x": 16, "y": 14, "w": 8, "h": 6 },
+          "targets": [{
+            "expr": "(1 - (node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes)) * 100",
+            "legendFormat": "{{instance}}"
+          }]
+        },
+        {
+          "id": 8,
+          "title": "HPA - Current vs Desired Replicas",
+          "type": "timeseries",
+          "gridPos": { "x": 0, "y": 20, "w": 24, "h": 8 },
+          "targets": [
+            {
+              "expr": "kube_horizontalpodautoscaler_status_current_replicas{namespace=\"google\"}",
+              "legendFormat": "current - {{horizontalpodautoscaler}}"
+            },
+            {
+              "expr": "kube_horizontalpodautoscaler_status_desired_replicas{namespace=\"google\"}",
+              "legendFormat": "desired - {{horizontalpodautoscaler}}"
+            }
+          ]
+        }
+      ]
+    }

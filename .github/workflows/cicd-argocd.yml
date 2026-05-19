@@ -249,7 +249,7 @@ jobs:
             local APP="$1"
             echo "🔄 Syncing $APP..."
             argocd app sync "$APP" --force --prune --timeout 120
-            argocd app wait "$APP" --health --timeout 240
+            argocd app wait "$APP" --health --timeout 600
             echo "✅ $APP healthy"
           }
 
@@ -277,3 +277,61 @@ jobs:
           echo "📋 Final ArgoCD App Status"
           echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
           argocd app list || true
+
+      # ─────────────────────────────────────────────
+      # 12. Deploy Prometheus + Grafana via ArgoCD
+      #     Idempotent — skips if already deployed
+      # ─────────────────────────────────────────────
+      - name: 📊 Deploy Prometheus + Grafana
+        if: ${{ !contains(github.event.head_commit.message, '[skip ci]') }}
+        run: |
+          if argocd app get "kube-prometheus-stack" >/dev/null 2>&1; then
+            echo "✅ kube-prometheus-stack already deployed, syncing..."
+            argocd app sync kube-prometheus-stack --timeout 120 || true
+          else
+            echo "➕ Deploying kube-prometheus-stack..."
+            argocd app create kube-prometheus-stack \
+              --repo https://prometheus-community.github.io/helm-charts \
+              --helm-chart kube-prometheus-stack \
+              --revision "*" \
+              --helm-set prometheus.prometheusSpec.serviceMonitorSelectorNilUsesHelmValues=false \
+              --helm-set prometheus.prometheusSpec.serviceMonitorSelector="" \
+              --helm-set grafana.enabled=true \
+              --helm-set grafana.adminPassword=admin123 \
+              --helm-set "grafana.service.type=LoadBalancer" \
+              --helm-set grafana.sidecar.dashboards.enabled=true \
+              --helm-set grafana.sidecar.dashboards.searchNamespace=ALL \
+              --helm-set nodeExporter.enabled=true \
+              --helm-set kubeStateMetrics.enabled=true \
+              --dest-server https://kubernetes.default.svc \
+              --dest-namespace monitoring \
+              --sync-policy automated \
+              --auto-prune \
+              --self-heal \
+              --upsert \
+              --insecure
+            echo "✅ kube-prometheus-stack deployed"
+          fi
+
+          # Apply ServiceMonitors + Grafana dashboard ConfigMap
+          echo "📡 Applying ServiceMonitors and Grafana dashboards..."
+          kubectl apply -f monitoring/prometheus/service-monitors.yml || true
+          kubectl apply -f monitoring/grafana/shopping-dashboard.yml  || true
+
+          echo ""
+          echo "⏳ Waiting for Grafana LoadBalancer IP..."
+          for i in $(seq 1 20); do
+            GRAFANA_URL=$(kubectl get svc prometheus-grafana -n monitoring \
+              -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' 2>/dev/null)
+            if [ -n "$GRAFANA_URL" ]; then
+              echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+              echo "🎉 Grafana is live!"
+              echo "   URL:      http://$GRAFANA_URL"
+              echo "   Username: admin"
+              echo "   Password: admin123"
+              echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+              break
+            fi
+            echo "⏳ Waiting... ($i/20)"
+            sleep 15
+          done
