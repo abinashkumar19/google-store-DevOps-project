@@ -1,4 +1,3 @@
-
 name: CI/CD for Shopping Site (Frontend + Backend)
 
 on:
@@ -12,7 +11,7 @@ env:
   FRONTEND_SERVICES: "main electronics phones computers earphones googlemusic googlepay googleclothes googlegrocery"
   BACKEND_SERVICE: "backend"
   ARGOCD_SERVER: ${{ secrets.ARGOCD_SERVER }}
-  # These must match exactly what "argocd app list" shows on your cluster
+  # Must match exactly what "argocd app list" shows on your cluster
   ARGOCD_FRONTEND_APPS: "main electronics phones computers earphones googlemusic googlepay googleclothes googlegrocery"
   ARGOCD_APP_BACKEND: "backend"
 
@@ -163,19 +162,34 @@ jobs:
       - name: 🚀 Sync Frontend Apps via ArgoCD
         if: ${{ !contains(github.event.head_commit.message, '[skip ci]') }}
         run: |
+          FAILED_APPS=""
           for app in $ARGOCD_FRONTEND_APPS; do
             echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
             echo "🔄 Syncing frontend app: $app"
             echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-            argocd app sync "$app" \
-              --force \
-              --prune \
-              --timeout 180
-            argocd app wait "$app" \
-              --health \
-              --timeout 300
+
+            if ! argocd app sync "$app" --force --prune --timeout 180; then
+              echo "❌ Sync failed for $app — does the app exist? Run: argocd app list"
+              FAILED_APPS="$FAILED_APPS $app"
+              continue
+            fi
+
+            if ! argocd app wait "$app" --health --timeout 300; then
+              echo "❌ Health check failed for $app"
+              FAILED_APPS="$FAILED_APPS $app"
+              continue
+            fi
+
             echo "✅ $app synced and healthy"
           done
+
+          if [ -n "$FAILED_APPS" ]; then
+            echo ""
+            echo "❌ The following apps failed:$FAILED_APPS"
+            echo "👉 Create missing apps on your cluster:"
+            echo "   argocd app create <name> --repo https://github.com/abinashkumar19/google-store-DevOps-project.git --path frontend/<name> --dest-server https://kubernetes.default.svc --dest-namespace google --sync-policy automated --auto-prune --self-heal --insecure"
+            exit 1
+          fi
 
       # ─────────────────────────────────────────────
       # 9. Sync Backend App
@@ -186,13 +200,13 @@ jobs:
           echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
           echo "🔄 Syncing backend app: $ARGOCD_APP_BACKEND"
           echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-          argocd app sync "$ARGOCD_APP_BACKEND" \
-            --force \
-            --prune \
-            --timeout 180
-          argocd app wait "$ARGOCD_APP_BACKEND" \
-            --health \
-            --timeout 300
+
+          if ! argocd app sync "$ARGOCD_APP_BACKEND" --force --prune --timeout 180; then
+            echo "❌ Backend sync failed — does the app exist? Run: argocd app list"
+            exit 1
+          fi
+
+          argocd app wait "$ARGOCD_APP_BACKEND" --health --timeout 300
           echo "✅ Backend synced and healthy"
 
       # ─────────────────────────────────────────────
@@ -207,5 +221,5 @@ jobs:
           for app in $ARGOCD_FRONTEND_APPS $ARGOCD_APP_BACKEND; do
             echo ""
             echo "--- $app ---"
-            argocd app get "$app" || true
+            argocd app get "$app" || echo "⚠️ App '$app' not found in ArgoCD"
           done
