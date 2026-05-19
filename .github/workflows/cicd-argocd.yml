@@ -43,8 +43,7 @@ jobs:
         uses: aws-actions/amazon-ecr-login@v2
 
       # ─────────────────────────────────────────────
-      # 3. Delete old ECR images + Build + Push
-      #    All services built IN PARALLEL with & 
+      # 3. Delete old ECR images + Build + Push (Parallel)
       # ─────────────────────────────────────────────
       - name: 🗑🛠 Clean ECR + Build + Push (Parallel)
         run: |
@@ -77,7 +76,6 @@ jobs:
             docker push "$IMAGE_URI" -q
             echo "✅ Done: $SERVICE → $IMAGE_URI"
 
-            # Patch deployment YAML
             if [ -f "$FOLDER/deployment.yml" ]; then
               sed -i "s|^\(\s*image:\s*\).*|\1$IMAGE_URI|" "$FOLDER/deployment.yml"
             fi
@@ -86,23 +84,18 @@ jobs:
             fi
           }
 
-          # Launch all frontend builds in parallel
           PIDS=()
           for service in $FRONTEND_SERVICES; do
             build_and_push "$service" "frontend/$service" "shopping-site-$service" &
             PIDS+=($!)
           done
-
-          # Launch backend build in parallel
           build_and_push "backend" "backend" "shopping-site-backend" &
           PIDS+=($!)
 
-          # Wait for all parallel jobs and capture failures
           FAILED=0
           for pid in "${PIDS[@]}"; do
-            wait "$pid" || { echo "❌ A build job failed (pid $pid)"; FAILED=1; }
+            wait "$pid" || { echo "❌ Build job failed (pid $pid)"; FAILED=1; }
           done
-
           [ $FAILED -eq 1 ] && exit 1
           echo "🎉 All builds and pushes complete!"
 
@@ -113,15 +106,10 @@ jobs:
         run: |
           git config --global user.name "GitHub Actions"
           git config --global user.email "actions@github.com"
-
           git remote set-url origin https://x-access-token:${{ secrets.GIT_PAT }}@github.com/${{ github.repository }}
-
           git add $(find frontend -name "deployment.yml") backend/backend-deployment.yml
-
           git diff --cached --quiet && echo "⚠️ No YAML changes to commit" && exit 0
-
           git commit -m "🔄 Update image tags after build [skip ci]"
-
           git pull --rebase origin main
           git push origin main
 
@@ -163,8 +151,7 @@ jobs:
             --insecure
 
       # ─────────────────────────────────────────────
-      # 8. Delete ALL old ArgoCD apps in PARALLEL
-      #    No sleep — poll until actually gone
+      # 8. Delete old ArgoCD deployments (Parallel)
       # ─────────────────────────────────────────────
       - name: 🔥 Delete old ArgoCD deployments (Parallel)
         if: ${{ !contains(github.event.head_commit.message, '[skip ci]') }}
@@ -174,9 +161,8 @@ jobs:
             if argocd app get "$APP" >/dev/null 2>&1; then
               echo "🔥 Deleting $APP..."
               argocd app delete "$APP" --cascade --yes
-              # Poll until gone instead of fixed sleep
               for i in $(seq 1 20); do
-                argocd app get "$APP" >/dev/null 2>&1 || { echo "✅ $APP fully removed"; return; }
+                argocd app get "$APP" >/dev/null 2>&1 || { echo "✅ $APP removed"; return; }
                 sleep 3
               done
               echo "⚠️ $APP deletion timed out, continuing anyway"
@@ -190,15 +176,11 @@ jobs:
             delete_app "$app" &
             PIDS+=($!)
           done
-
-          for pid in "${PIDS[@]}"; do
-            wait "$pid"
-          done
-
+          for pid in "${PIDS[@]}"; do wait "$pid"; done
           echo "🎉 All old ArgoCD apps deleted!"
 
       # ─────────────────────────────────────────────
-      # 9. Recreate ALL ArgoCD apps in PARALLEL
+      # 9. Recreate ArgoCD apps (Parallel)
       # ─────────────────────────────────────────────
       - name: ➕ Recreate ArgoCD apps (Parallel)
         if: ${{ !contains(github.event.head_commit.message, '[skip ci]') }}
@@ -230,17 +212,14 @@ jobs:
 
           FAILED=0
           for pid in "${PIDS[@]}"; do
-            wait "$pid" || { echo "❌ A create job failed"; FAILED=1; }
+            wait "$pid" || { echo "❌ Create failed"; FAILED=1; }
           done
-
           [ $FAILED -eq 1 ] && exit 1
-
-          echo ""
-          echo "📋 ArgoCD apps after recreation:"
+          echo "📋 Apps after recreation:"
           argocd app list
 
       # ─────────────────────────────────────────────
-      # 10. Sync ALL apps in PARALLEL + wait healthy
+      # 10. Sync all apps (Parallel)
       # ─────────────────────────────────────────────
       - name: 🚀 Sync All Apps (Parallel)
         if: ${{ !contains(github.event.head_commit.message, '[skip ci]') }}
@@ -261,47 +240,48 @@ jobs:
 
           FAILED=0
           for pid in "${PIDS[@]}"; do
-            wait "$pid" || { echo "❌ A sync job failed"; FAILED=1; }
+            wait "$pid" || { echo "❌ Sync failed"; FAILED=1; }
           done
-
           [ $FAILED -eq 1 ] && exit 1
           echo "🎉 All apps synced and healthy!"
 
       # ─────────────────────────────────────────────
-      # 11. Final status
+      # 11. Install Prometheus + Grafana via ArgoCD
+      #     No separate YAML files needed.
+      #     Dashboard 1860 auto-loaded from grafana.com
       # ─────────────────────────────────────────────
-      - name: 📊 ArgoCD App Status
-        if: always()
-        run: |
-          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-          echo "📋 Final ArgoCD App Status"
-          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-          argocd app list || true
-
-      # ─────────────────────────────────────────────
-      # 12. Deploy full monitoring stack via ArgoCD
-      #     Prometheus + Grafana + Dashboard 1860
-      #     Idempotent — safe to run every push
-      # ─────────────────────────────────────────────
-      - name: 📊 Deploy Monitoring Stack (Prometheus + Grafana)
+      - name: 📊 Install Prometheus + Grafana (Dashboard 1860)
         if: ${{ !contains(github.event.head_commit.message, '[skip ci]') }}
         run: |
           if argocd app get "monitoring-stack" >/dev/null 2>&1; then
-            echo "✅ monitoring-stack already exists, syncing latest..."
+            echo "✅ monitoring-stack already exists, syncing..."
             argocd app sync monitoring-stack --timeout 120 || true
           else
-            echo "➕ Deploying full monitoring stack..."
+            echo "➕ Installing Prometheus + Grafana..."
             argocd app create monitoring-stack \
               --repo https://prometheus-community.github.io/helm-charts \
               --helm-chart kube-prometheus-stack \
               --revision "*" \
               --helm-set prometheus.prometheusSpec.serviceMonitorSelectorNilUsesHelmValues=false \
+              --helm-set prometheus.prometheusSpec.serviceMonitorSelector="" \
+              --helm-set prometheus.prometheusSpec.serviceMonitorNamespaceSelector="" \
+              --helm-set prometheus.prometheusSpec.podMonitorSelectorNilUsesHelmValues=false \
+              --helm-set prometheus.prometheusSpec.retention=15d \
+              --helm-set nodeExporter.enabled=true \
+              --helm-set kubeStateMetrics.enabled=true \
+              --helm-set alertmanager.enabled=true \
               --helm-set grafana.enabled=true \
               --helm-set grafana.adminPassword=admin123 \
               --helm-set "grafana.service.type=LoadBalancer" \
               --helm-set grafana.persistence.enabled=true \
               --helm-set grafana.sidecar.dashboards.enabled=true \
               --helm-set grafana.sidecar.dashboards.searchNamespace=ALL \
+              --helm-set "grafana.dashboardProviders.dashboardproviders\.yaml.apiVersion=1" \
+              --helm-set "grafana.dashboardProviders.dashboardproviders\.yaml.providers[0].name=default" \
+              --helm-set "grafana.dashboardProviders.dashboardproviders\.yaml.providers[0].orgId=1" \
+              --helm-set "grafana.dashboardProviders.dashboardproviders\.yaml.providers[0].type=file" \
+              --helm-set "grafana.dashboardProviders.dashboardproviders\.yaml.providers[0].disableDeletion=false" \
+              --helm-set "grafana.dashboardProviders.dashboardproviders\.yaml.providers[0].options.path=/var/lib/grafana/dashboards/default" \
               --helm-set "grafana.dashboards.default.node-exporter-full.gnetId=1860" \
               --helm-set "grafana.dashboards.default.node-exporter-full.revision=37" \
               --helm-set "grafana.dashboards.default.node-exporter-full.datasource=Prometheus" \
@@ -311,9 +291,6 @@ jobs:
               --helm-set "grafana.dashboards.default.kubernetes-pods.gnetId=6417" \
               --helm-set "grafana.dashboards.default.kubernetes-pods.revision=1" \
               --helm-set "grafana.dashboards.default.kubernetes-pods.datasource=Prometheus" \
-              --helm-set nodeExporter.enabled=true \
-              --helm-set kubeStateMetrics.enabled=true \
-              --helm-set alertmanager.enabled=true \
               --dest-server https://kubernetes.default.svc \
               --dest-namespace monitoring \
               --sync-policy automated \
@@ -321,35 +298,30 @@ jobs:
               --self-heal \
               --upsert \
               --insecure
-            echo "✅ Monitoring stack deployed"
+            echo "✅ Prometheus + Grafana deployed!"
           fi
 
-          echo ""
-          echo "⏳ Waiting for Grafana LoadBalancer URL..."
-          for i in $(seq 1 24); do
-            GRAFANA_URL=$(kubectl get svc monitoring-grafana -n monitoring \
-              -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' 2>/dev/null)
-            if [ -n "$GRAFANA_URL" ]; then
-              echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-              echo "🎉 Grafana is LIVE!"
-              echo "   URL:       http://$GRAFANA_URL"
-              echo "   Username:  admin"
-              echo "   Password:  admin123"
-              echo "   Dashboard: http://$GRAFANA_URL/d/rYdddlPWk/node-exporter-full"
-              echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-              break
-            fi
-            echo "⏳ Still waiting for LB IP... ($i/24)"
-            sleep 15
-          done
+          echo "⏳ Waiting for monitoring stack to become healthy..."
+          argocd app wait monitoring-stack --health --timeout 300 || true
+
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo "🎉 Grafana is ready!"
+          echo "   Run on EC2 to get URL:"
+          echo "   kubectl get svc monitoring-grafana -n monitoring"
+          echo "   Username:  admin"
+          echo "   Password:  admin123"
+          echo "   ✅ Dashboard 1860 (Node Exporter Full) auto-loaded"
+          echo "   ✅ Dashboard 3119 (Kubernetes Cluster) auto-loaded"
+          echo "   ✅ Dashboard 6417 (Kubernetes Pods)    auto-loaded"
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
       # ─────────────────────────────────────────────
-      # 13. Final status
+      # 12. Final status of all ArgoCD apps
       # ─────────────────────────────────────────────
-      - name: 📊 ArgoCD App Status
+      - name: 📋 Final ArgoCD App Status
         if: always()
         run: |
           echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-          echo "📋 Final ArgoCD App Status"
+          echo "📋 All ArgoCD Apps"
           echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
           argocd app list || true
