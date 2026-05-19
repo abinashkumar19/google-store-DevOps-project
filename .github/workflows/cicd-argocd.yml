@@ -9,7 +9,6 @@ env:
   AWS_REGION: ap-northeast-1
   ECR_REGISTRY: ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.ap-northeast-1.amazonaws.com
   FRONTEND_SERVICES: "main electronics phones computers earphones googlemusic googlepay googleclothes googlegrocery"
-  BACKEND_SERVICE: "backend"
   ARGOCD_SERVER: ${{ secrets.ARGOCD_SERVER }}
   ARGOCD_FRONTEND_APPS: "main electronics phones computers earphones googlemusic googlepay googleclothes googlegrocery"
   ARGOCD_APP_BACKEND: "backend"
@@ -44,89 +43,71 @@ jobs:
         uses: aws-actions/amazon-ecr-login@v2
 
       # ─────────────────────────────────────────────
-      # 3. Delete ALL old images from ECR before build
+      # 3. Delete old ECR images + Build + Push
+      #    All services built IN PARALLEL with & 
       # ─────────────────────────────────────────────
-      - name: 🗑 Delete old ECR images
-        run: |
-          set -e
-
-          delete_all_images() {
-            local REPO_NAME="$1"
-
-            aws ecr describe-repositories --repository-names "$REPO_NAME" >/dev/null 2>&1 || {
-              echo "⚠️ Repo $REPO_NAME does not exist yet, skipping cleanup."
-              return
-            }
-
-            IMAGE_IDS=$(aws ecr list-images \
-              --repository-name "$REPO_NAME" \
-              --query 'imageIds[*]' \
-              --output json)
-
-            if [ "$IMAGE_IDS" = "[]" ] || [ -z "$IMAGE_IDS" ]; then
-              echo "ℹ️ No images in $REPO_NAME, nothing to delete."
-              return
-            fi
-
-            echo "🗑 Deleting all images from $REPO_NAME..."
-            aws ecr batch-delete-image \
-              --repository-name "$REPO_NAME" \
-              --image-ids "$IMAGE_IDS" \
-              --output table
-            echo "✅ Cleared $REPO_NAME"
-          }
-
-          for service in $FRONTEND_SERVICES; do
-            delete_all_images "shopping-site-$service"
-          done
-
-          delete_all_images "shopping-site-backend"
-
-      # ─────────────────────────────────────────────
-      # 4. Build & push fresh Docker images
-      # ─────────────────────────────────────────────
-      - name: 🛠 Build and Push Docker Images
+      - name: 🗑🛠 Clean ECR + Build + Push (Parallel)
         run: |
           set -e
           IMAGE_TAG="${GITHUB_SHA}"
 
-          for service in $FRONTEND_SERVICES; do
-            FOLDER="frontend/$service"
-            REPO_NAME="shopping-site-$service"
-            IMAGE_URI="$ECR_REGISTRY/$REPO_NAME:$IMAGE_TAG"
+          build_and_push() {
+            local SERVICE="$1"
+            local FOLDER="$2"
+            local REPO_NAME="$3"
+            local IMAGE_URI="$ECR_REGISTRY/$REPO_NAME:$IMAGE_TAG"
 
-            if [ ! -f "$FOLDER/Dockerfile" ]; then
-              echo "⚠️ No Dockerfile in $FOLDER, skipping..."
-              continue
+            # Delete old images
+            if aws ecr describe-repositories --repository-names "$REPO_NAME" >/dev/null 2>&1; then
+              IMAGE_IDS=$(aws ecr list-images --repository-name "$REPO_NAME" --query 'imageIds[*]' --output json)
+              if [ "$IMAGE_IDS" != "[]" ] && [ -n "$IMAGE_IDS" ]; then
+                aws ecr batch-delete-image --repository-name "$REPO_NAME" --image-ids "$IMAGE_IDS" >/dev/null
+                echo "🗑 Cleared $REPO_NAME"
+              fi
+            else
+              aws ecr create-repository --repository-name "$REPO_NAME" >/dev/null
             fi
 
-            echo "🚀 Building $service..."
-            aws ecr describe-repositories --repository-names "$REPO_NAME" >/dev/null 2>&1 || \
-              aws ecr create-repository --repository-name "$REPO_NAME"
+            if [ ! -f "$FOLDER/Dockerfile" ]; then
+              echo "⚠️ No Dockerfile in $FOLDER, skipping $SERVICE"
+              return
+            fi
 
-            docker build -t "$IMAGE_URI" "$FOLDER"
-            docker push "$IMAGE_URI"
-            echo "✅ Pushed $IMAGE_URI"
+            docker build -t "$IMAGE_URI" "$FOLDER" -q
+            docker push "$IMAGE_URI" -q
+            echo "✅ Done: $SERVICE → $IMAGE_URI"
 
-            sed -i "s|^\(\s*image:\s*\).*|\1$IMAGE_URI|" "$FOLDER/deployment.yml"
+            # Patch deployment YAML
+            if [ -f "$FOLDER/deployment.yml" ]; then
+              sed -i "s|^\(\s*image:\s*\).*|\1$IMAGE_URI|" "$FOLDER/deployment.yml"
+            fi
+            if [ -f "$FOLDER/backend-deployment.yml" ]; then
+              sed -i "s|^\(\s*image:\s*\).*|\1$IMAGE_URI|" "$FOLDER/backend-deployment.yml"
+            fi
+          }
+
+          # Launch all frontend builds in parallel
+          PIDS=()
+          for service in $FRONTEND_SERVICES; do
+            build_and_push "$service" "frontend/$service" "shopping-site-$service" &
+            PIDS+=($!)
           done
 
-          FOLDER="backend"
-          REPO_NAME="shopping-site-backend"
-          IMAGE_URI="$ECR_REGISTRY/$REPO_NAME:$IMAGE_TAG"
+          # Launch backend build in parallel
+          build_and_push "backend" "backend" "shopping-site-backend" &
+          PIDS+=($!)
 
-          echo "🚀 Building backend..."
-          aws ecr describe-repositories --repository-names "$REPO_NAME" >/dev/null 2>&1 || \
-            aws ecr create-repository --repository-name "$REPO_NAME"
+          # Wait for all parallel jobs and capture failures
+          FAILED=0
+          for pid in "${PIDS[@]}"; do
+            wait "$pid" || { echo "❌ A build job failed (pid $pid)"; FAILED=1; }
+          done
 
-          docker build -t "$IMAGE_URI" "$FOLDER"
-          docker push "$IMAGE_URI"
-          echo "✅ Pushed $IMAGE_URI"
-
-          sed -i "s|^\(\s*image:\s*\).*|\1$IMAGE_URI|" "$FOLDER/backend-deployment.yml"
+          [ $FAILED -eq 1 ] && exit 1
+          echo "🎉 All builds and pushes complete!"
 
       # ─────────────────────────────────────────────
-      # 5. Commit patched YAMLs back to Git
+      # 4. Commit patched YAMLs back to Git
       # ─────────────────────────────────────────────
       - name: 🔄 Commit updated YAML files
         run: |
@@ -145,7 +126,7 @@ jobs:
           git push origin main
 
       # ─────────────────────────────────────────────
-      # 6. Validate ArgoCD secrets
+      # 5. Validate ArgoCD secrets
       # ─────────────────────────────────────────────
       - name: ✅ Validate ArgoCD secrets
         if: ${{ !contains(github.event.head_commit.message, '[skip ci]') }}
@@ -154,17 +135,14 @@ jobs:
           [ -z "${{ secrets.ARGOCD_SERVER }}"   ] && MISSING="$MISSING ARGOCD_SERVER"
           [ -z "${{ secrets.ARGOCD_USERNAME }}" ] && MISSING="$MISSING ARGOCD_USERNAME"
           [ -z "${{ secrets.ARGOCD_PASSWORD }}" ] && MISSING="$MISSING ARGOCD_PASSWORD"
-
           if [ -n "$MISSING" ]; then
-            echo "❌ Missing required secrets:$MISSING"
-            echo "👉 Repo → Settings → Secrets and variables → Actions → New repository secret"
+            echo "❌ Missing secrets:$MISSING"
             exit 1
           fi
-
-          echo "✅ All ArgoCD secrets are present."
+          echo "✅ All ArgoCD secrets present."
 
       # ─────────────────────────────────────────────
-      # 7. Install ArgoCD CLI
+      # 6. Install ArgoCD CLI
       # ─────────────────────────────────────────────
       - name: 🔽 Install ArgoCD CLI
         if: ${{ !contains(github.event.head_commit.message, '[skip ci]') }}
@@ -172,10 +150,9 @@ jobs:
           curl -sSL -o /usr/local/bin/argocd \
             https://github.com/argoproj/argo-cd/releases/latest/download/argocd-linux-amd64
           chmod +x /usr/local/bin/argocd
-          argocd version --client
 
       # ─────────────────────────────────────────────
-      # 8. Login to ArgoCD
+      # 7. Login to ArgoCD
       # ─────────────────────────────────────────────
       - name: 🔐 Login to ArgoCD
         if: ${{ !contains(github.event.head_commit.message, '[skip ci]') }}
@@ -186,29 +163,50 @@ jobs:
             --insecure
 
       # ─────────────────────────────────────────────
-      # 9. Delete old ArgoCD deployments + recreate
-      #    Deletes the ArgoCD app (which removes all
-      #    K8s resources it owns), then recreates the
-      #    app fresh so ArgoCD deploys from scratch.
+      # 8. Delete ALL old ArgoCD apps in PARALLEL
+      #    No sleep — poll until actually gone
       # ─────────────────────────────────────────────
-      - name: 🔥 Delete old ArgoCD deployments
+      - name: 🔥 Delete old ArgoCD deployments (Parallel)
         if: ${{ !contains(github.event.head_commit.message, '[skip ci]') }}
         run: |
-          delete_and_recreate() {
+          delete_app() {
+            local APP="$1"
+            if argocd app get "$APP" >/dev/null 2>&1; then
+              echo "🔥 Deleting $APP..."
+              argocd app delete "$APP" --cascade --yes
+              # Poll until gone instead of fixed sleep
+              for i in $(seq 1 20); do
+                argocd app get "$APP" >/dev/null 2>&1 || { echo "✅ $APP fully removed"; return; }
+                sleep 3
+              done
+              echo "⚠️ $APP deletion timed out, continuing anyway"
+            else
+              echo "ℹ️ $APP does not exist, skipping."
+            fi
+          }
+
+          PIDS=()
+          for app in $ARGOCD_FRONTEND_APPS $ARGOCD_APP_BACKEND; do
+            delete_app "$app" &
+            PIDS+=($!)
+          done
+
+          for pid in "${PIDS[@]}"; do
+            wait "$pid"
+          done
+
+          echo "🎉 All old ArgoCD apps deleted!"
+
+      # ─────────────────────────────────────────────
+      # 9. Recreate ALL ArgoCD apps in PARALLEL
+      # ─────────────────────────────────────────────
+      - name: ➕ Recreate ArgoCD apps (Parallel)
+        if: ${{ !contains(github.event.head_commit.message, '[skip ci]') }}
+        run: |
+          create_app() {
             local APP="$1"
             local PATH_IN_REPO="$2"
-
-            if argocd app get "$APP" >/dev/null 2>&1; then
-              echo "🔥 Deleting existing ArgoCD app and all its K8s resources: $APP"
-              argocd app delete "$APP" --cascade --yes
-              echo "⏳ Waiting for $APP resources to be fully removed..."
-              sleep 30
-              echo "✅ Deleted $APP"
-            else
-              echo "ℹ️ App '$APP' does not exist yet, skipping delete."
-            fi
-
-            echo "➕ Recreating ArgoCD app: $APP"
+            echo "➕ Creating $APP..."
             argocd app create "$APP" \
               --repo "https://github.com/${{ github.repository }}.git" \
               --path "$PATH_IN_REPO" \
@@ -219,73 +217,58 @@ jobs:
               --self-heal \
               --upsert \
               --insecure
-            echo "✅ Recreated $APP"
+            echo "✅ Created $APP"
           }
 
-          # Delete + recreate all frontend apps
+          PIDS=()
           for service in main electronics phones computers earphones googlemusic googlepay googleclothes googlegrocery; do
-            delete_and_recreate "$service" "frontend/$service"
+            create_app "$service" "frontend/$service" &
+            PIDS+=($!)
+          done
+          create_app "backend" "backend" &
+          PIDS+=($!)
+
+          FAILED=0
+          for pid in "${PIDS[@]}"; do
+            wait "$pid" || { echo "❌ A create job failed"; FAILED=1; }
           done
 
-          # Delete + recreate backend app
-          delete_and_recreate "backend" "backend"
+          [ $FAILED -eq 1 ] && exit 1
 
           echo ""
           echo "📋 ArgoCD apps after recreation:"
           argocd app list
 
       # ─────────────────────────────────────────────
-      # 10. Sync each Frontend App
+      # 10. Sync ALL apps in PARALLEL + wait healthy
       # ─────────────────────────────────────────────
-      - name: 🚀 Sync Frontend Apps via ArgoCD
+      - name: 🚀 Sync All Apps (Parallel)
         if: ${{ !contains(github.event.head_commit.message, '[skip ci]') }}
         run: |
-          FAILED_APPS=""
-          for app in $ARGOCD_FRONTEND_APPS; do
-            echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-            echo "🔄 Syncing frontend app: $app"
-            echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          sync_app() {
+            local APP="$1"
+            echo "🔄 Syncing $APP..."
+            argocd app sync "$APP" --force --prune --timeout 120
+            argocd app wait "$APP" --health --timeout 240
+            echo "✅ $APP healthy"
+          }
 
-            if ! argocd app sync "$app" --force --prune --timeout 180; then
-              echo "❌ Sync failed for $app"
-              FAILED_APPS="$FAILED_APPS $app"
-              continue
-            fi
-
-            if ! argocd app wait "$app" --health --timeout 300; then
-              echo "❌ Health check failed for $app"
-              FAILED_APPS="$FAILED_APPS $app"
-              continue
-            fi
-
-            echo "✅ $app synced and healthy"
+          PIDS=()
+          for app in $ARGOCD_FRONTEND_APPS $ARGOCD_APP_BACKEND; do
+            sync_app "$app" &
+            PIDS+=($!)
           done
 
-          if [ -n "$FAILED_APPS" ]; then
-            echo "❌ The following apps failed:$FAILED_APPS"
-            exit 1
-          fi
+          FAILED=0
+          for pid in "${PIDS[@]}"; do
+            wait "$pid" || { echo "❌ A sync job failed"; FAILED=1; }
+          done
+
+          [ $FAILED -eq 1 ] && exit 1
+          echo "🎉 All apps synced and healthy!"
 
       # ─────────────────────────────────────────────
-      # 11. Sync Backend App
-      # ─────────────────────────────────────────────
-      - name: 🚀 Sync Backend App via ArgoCD
-        if: ${{ !contains(github.event.head_commit.message, '[skip ci]') }}
-        run: |
-          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-          echo "🔄 Syncing backend app: $ARGOCD_APP_BACKEND"
-          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-
-          if ! argocd app sync "$ARGOCD_APP_BACKEND" --force --prune --timeout 180; then
-            echo "❌ Backend sync failed"
-            exit 1
-          fi
-
-          argocd app wait "$ARGOCD_APP_BACKEND" --health --timeout 300
-          echo "✅ Backend synced and healthy"
-
-      # ─────────────────────────────────────────────
-      # 12. Print final status of all apps
+      # 11. Final status
       # ─────────────────────────────────────────────
       - name: 📊 ArgoCD App Status
         if: always()
@@ -293,8 +276,4 @@ jobs:
           echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
           echo "📋 Final ArgoCD App Status"
           echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-          for app in $ARGOCD_FRONTEND_APPS $ARGOCD_APP_BACKEND; do
-            echo ""
-            echo "--- $app ---"
-            argocd app get "$app" || echo "⚠️ App '$app' not found in ArgoCD"
-          done
+          argocd app list || true
