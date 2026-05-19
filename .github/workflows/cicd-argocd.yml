@@ -45,8 +45,6 @@ jobs:
 
       # ─────────────────────────────────────────────
       # 3. Delete ALL old images from ECR before build
-      #    Wipes every existing tag so only the new
-      #    image (this commit's SHA) remains after push
       # ─────────────────────────────────────────────
       - name: 🗑 Delete old ECR images
         run: |
@@ -55,20 +53,18 @@ jobs:
           delete_all_images() {
             local REPO_NAME="$1"
 
-            # Check repo exists first
             aws ecr describe-repositories --repository-names "$REPO_NAME" >/dev/null 2>&1 || {
               echo "⚠️ Repo $REPO_NAME does not exist yet, skipping cleanup."
               return
             }
 
-            # Get all image digests in the repo
             IMAGE_IDS=$(aws ecr list-images \
               --repository-name "$REPO_NAME" \
               --query 'imageIds[*]' \
               --output json)
 
             if [ "$IMAGE_IDS" = "[]" ] || [ -z "$IMAGE_IDS" ]; then
-              echo "ℹ️ No images found in $REPO_NAME, nothing to delete."
+              echo "ℹ️ No images in $REPO_NAME, nothing to delete."
               return
             fi
 
@@ -80,12 +76,10 @@ jobs:
             echo "✅ Cleared $REPO_NAME"
           }
 
-          # Delete from all frontend repos
           for service in $FRONTEND_SERVICES; do
             delete_all_images "shopping-site-$service"
           done
 
-          # Delete from backend repo
           delete_all_images "shopping-site-backend"
 
       # ─────────────────────────────────────────────
@@ -96,7 +90,6 @@ jobs:
           set -e
           IMAGE_TAG="${GITHUB_SHA}"
 
-          # --- Frontend Services ---
           for service in $FRONTEND_SERVICES; do
             FOLDER="frontend/$service"
             REPO_NAME="shopping-site-$service"
@@ -118,7 +111,6 @@ jobs:
             sed -i "s|^\(\s*image:\s*\).*|\1$IMAGE_URI|" "$FOLDER/deployment.yml"
           done
 
-          # --- Backend Service ---
           FOLDER="backend"
           REPO_NAME="shopping-site-backend"
           IMAGE_URI="$ECR_REGISTRY/$REPO_NAME:$IMAGE_TAG"
@@ -153,7 +145,7 @@ jobs:
           git push origin main
 
       # ─────────────────────────────────────────────
-      # 6. Validate ArgoCD secrets exist
+      # 6. Validate ArgoCD secrets
       # ─────────────────────────────────────────────
       - name: ✅ Validate ArgoCD secrets
         if: ${{ !contains(github.event.head_commit.message, '[skip ci]') }}
@@ -165,7 +157,7 @@ jobs:
 
           if [ -n "$MISSING" ]; then
             echo "❌ Missing required secrets:$MISSING"
-            echo "👉 Go to: Repo → Settings → Secrets and variables → Actions → New repository secret"
+            echo "👉 Repo → Settings → Secrets and variables → Actions → New repository secret"
             exit 1
           fi
 
@@ -194,46 +186,55 @@ jobs:
             --insecure
 
       # ─────────────────────────────────────────────
-      # 9. Create missing ArgoCD apps (idempotent)
+      # 9. Delete old ArgoCD deployments + recreate
+      #    Deletes the ArgoCD app (which removes all
+      #    K8s resources it owns), then recreates the
+      #    app fresh so ArgoCD deploys from scratch.
       # ─────────────────────────────────────────────
-      - name: 🏗 Create ArgoCD Apps if Missing
+      - name: 🔥 Delete old ArgoCD deployments
         if: ${{ !contains(github.event.head_commit.message, '[skip ci]') }}
         run: |
-          create_app_if_missing() {
+          delete_and_recreate() {
             local APP="$1"
             local PATH_IN_REPO="$2"
 
             if argocd app get "$APP" >/dev/null 2>&1; then
-              echo "✅ App '$APP' already exists, skipping create."
+              echo "🔥 Deleting existing ArgoCD app and all its K8s resources: $APP"
+              argocd app delete "$APP" --cascade --yes
+              echo "⏳ Waiting for $APP resources to be fully removed..."
+              sleep 15
+              echo "✅ Deleted $APP"
             else
-              echo "➕ Creating ArgoCD app: $APP"
-              argocd app create "$APP" \
-                --repo "https://github.com/${{ github.repository }}.git" \
-                --path "$PATH_IN_REPO" \
-                --dest-server https://kubernetes.default.svc \
-                --dest-namespace google \
-                --sync-policy automated \
-                --auto-prune \
-                --self-heal \
-                --insecure
-              echo "✅ Created $APP"
+              echo "ℹ️ App '$APP' does not exist yet, skipping delete."
             fi
+
+            echo "➕ Recreating ArgoCD app: $APP"
+            argocd app create "$APP" \
+              --repo "https://github.com/${{ github.repository }}.git" \
+              --path "$PATH_IN_REPO" \
+              --dest-server https://kubernetes.default.svc \
+              --dest-namespace google \
+              --sync-policy automated \
+              --auto-prune \
+              --self-heal \
+              --insecure
+            echo "✅ Recreated $APP"
           }
 
-          # All frontend apps
+          # Delete + recreate all frontend apps
           for service in main electronics phones computers earphones googlemusic googlepay googleclothes googlegrocery; do
-            create_app_if_missing "$service" "frontend/$service"
+            delete_and_recreate "$service" "frontend/$service"
           done
 
-          # Backend app
-          create_app_if_missing "backend" "backend"
+          # Delete + recreate backend app
+          delete_and_recreate "backend" "backend"
 
           echo ""
-          echo "📋 Current ArgoCD apps:"
+          echo "📋 ArgoCD apps after recreation:"
           argocd app list
 
       # ─────────────────────────────────────────────
-      # 10. Sync each Frontend App individually
+      # 10. Sync each Frontend App
       # ─────────────────────────────────────────────
       - name: 🚀 Sync Frontend Apps via ArgoCD
         if: ${{ !contains(github.event.head_commit.message, '[skip ci]') }}
