@@ -11,7 +11,6 @@ env:
   FRONTEND_SERVICES: "main electronics phones computers earphones googlemusic googlepay googleclothes googlegrocery"
   BACKEND_SERVICE: "backend"
   ARGOCD_SERVER: ${{ secrets.ARGOCD_SERVER }}
-  # Must match exactly what "argocd app list" shows on your cluster
   ARGOCD_FRONTEND_APPS: "main electronics phones computers earphones googlemusic googlepay googleclothes googlegrocery"
   ARGOCD_APP_BACKEND: "backend"
 
@@ -70,7 +69,6 @@ jobs:
             docker build -t "$IMAGE_URI" "$FOLDER"
             docker push "$IMAGE_URI"
 
-            # Patch deployment.yml so ArgoCD picks up the new image tag
             sed -i "s|^\(\s*image:\s*\).*|\1$IMAGE_URI|" "$FOLDER/deployment.yml"
           done
 
@@ -90,8 +88,6 @@ jobs:
 
       # ─────────────────────────────────────────────
       # 4. Commit patched YAMLs back to Git
-      #    ArgoCD watches this repo — the commit is
-      #    the GitOps "source of truth" trigger.
       # ─────────────────────────────────────────────
       - name: 🔄 Commit updated YAML files
         run: |
@@ -122,11 +118,7 @@ jobs:
 
           if [ -n "$MISSING" ]; then
             echo "❌ Missing required secrets:$MISSING"
-            echo ""
             echo "👉 Go to: Repo → Settings → Secrets and variables → Actions → New repository secret"
-            echo "   ARGOCD_SERVER   → ELB hostname, e.g. abc123.ap-northeast-1.elb.amazonaws.com"
-            echo "   ARGOCD_USERNAME → admin"
-            echo "   ARGOCD_PASSWORD → kubectl -n argocd get secret argocd-initial-admin-secret -o jsonpath='{.data.password}' | base64 -d"
             exit 1
           fi
 
@@ -155,9 +147,73 @@ jobs:
             --insecure
 
       # ─────────────────────────────────────────────
-      # 8. Sync each Frontend App individually
-      #    Loops over all 9 services matching your
-      #    actual ArgoCD app names (argocd app list)
+      # 8. Create missing ArgoCD apps (idempotent)
+      #    Safe to run every time — skips if exists
+      # ─────────────────────────────────────────────
+      - name: 🏗 Create ArgoCD Apps if Missing
+        if: ${{ !contains(github.event.head_commit.message, '[skip ci]') }}
+        run: |
+          # Frontend apps
+          for service in electronics phones computers earphones googlepay googleclothes googlegrocery; do
+            if argocd app get "$service" >/dev/null 2>&1; then
+              echo "✅ App '$service' already exists, skipping create."
+            else
+              echo "➕ Creating ArgoCD app: $service"
+              argocd app create "$service" \
+                --repo https://github.com/${{ github.repository }}.git \
+                --path "frontend/$service" \
+                --dest-server https://kubernetes.default.svc \
+                --dest-namespace google \
+                --sync-policy automated \
+                --auto-prune \
+                --self-heal \
+                --insecure
+              echo "✅ Created $service"
+            fi
+          done
+
+          # Ensure main and googlemusic also exist
+          for service in main googlemusic; do
+            if argocd app get "$service" >/dev/null 2>&1; then
+              echo "✅ App '$service' already exists, skipping create."
+            else
+              echo "➕ Creating ArgoCD app: $service"
+              argocd app create "$service" \
+                --repo https://github.com/${{ github.repository }}.git \
+                --path "frontend/$service" \
+                --dest-server https://kubernetes.default.svc \
+                --dest-namespace google \
+                --sync-policy automated \
+                --auto-prune \
+                --self-heal \
+                --insecure
+              echo "✅ Created $service"
+            fi
+          done
+
+          # Backend app
+          if argocd app get "backend" >/dev/null 2>&1; then
+            echo "✅ App 'backend' already exists, skipping create."
+          else
+            echo "➕ Creating ArgoCD app: backend"
+            argocd app create backend \
+              --repo https://github.com/${{ github.repository }}.git \
+              --path backend \
+              --dest-server https://kubernetes.default.svc \
+              --dest-namespace google \
+              --sync-policy automated \
+              --auto-prune \
+              --self-heal \
+              --insecure
+            echo "✅ Created backend"
+          fi
+
+          echo ""
+          echo "📋 Current ArgoCD apps:"
+          argocd app list
+
+      # ─────────────────────────────────────────────
+      # 9. Sync each Frontend App individually
       # ─────────────────────────────────────────────
       - name: 🚀 Sync Frontend Apps via ArgoCD
         if: ${{ !contains(github.event.head_commit.message, '[skip ci]') }}
@@ -169,7 +225,7 @@ jobs:
             echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
             if ! argocd app sync "$app" --force --prune --timeout 180; then
-              echo "❌ Sync failed for $app — does the app exist? Run: argocd app list"
+              echo "❌ Sync failed for $app"
               FAILED_APPS="$FAILED_APPS $app"
               continue
             fi
@@ -186,13 +242,11 @@ jobs:
           if [ -n "$FAILED_APPS" ]; then
             echo ""
             echo "❌ The following apps failed:$FAILED_APPS"
-            echo "👉 Create missing apps on your cluster:"
-            echo "   argocd app create <name> --repo https://github.com/abinashkumar19/google-store-DevOps-project.git --path frontend/<name> --dest-server https://kubernetes.default.svc --dest-namespace google --sync-policy automated --auto-prune --self-heal --insecure"
             exit 1
           fi
 
       # ─────────────────────────────────────────────
-      # 9. Sync Backend App
+      # 10. Sync Backend App
       # ─────────────────────────────────────────────
       - name: 🚀 Sync Backend App via ArgoCD
         if: ${{ !contains(github.event.head_commit.message, '[skip ci]') }}
@@ -202,7 +256,7 @@ jobs:
           echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
           if ! argocd app sync "$ARGOCD_APP_BACKEND" --force --prune --timeout 180; then
-            echo "❌ Backend sync failed — does the app exist? Run: argocd app list"
+            echo "❌ Backend sync failed"
             exit 1
           fi
 
@@ -210,7 +264,7 @@ jobs:
           echo "✅ Backend synced and healthy"
 
       # ─────────────────────────────────────────────
-      # 10. Print final status of all apps
+      # 11. Print final status of all apps
       # ─────────────────────────────────────────────
       - name: 📊 ArgoCD App Status
         if: always()
