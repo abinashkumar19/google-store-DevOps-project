@@ -44,7 +44,7 @@ jobs:
 
       # ─────────────────────────────────────────────
       # 3. Delete old ECR images + Build + Push
-      #    All services built IN PARALLEL with & 
+      #    All services built IN PARALLEL with &
       # ─────────────────────────────────────────────
       - name: 🗑🛠 Clean ECR + Build + Push (Parallel)
         run: |
@@ -240,7 +240,8 @@ jobs:
           argocd app list
 
       # ─────────────────────────────────────────────
-      # 10. Sync ALL apps in PARALLEL + wait healthy
+      # 10. Terminate any in-progress ops, then
+      #     Sync ALL apps in PARALLEL + wait healthy
       # ─────────────────────────────────────────────
       - name: 🚀 Sync All Apps (Parallel)
         if: ${{ !contains(github.event.head_commit.message, '[skip ci]') }}
@@ -248,7 +249,25 @@ jobs:
           sync_app() {
             local APP="$1"
             echo "🔄 Syncing $APP..."
-            argocd app sync "$APP" --force --prune --timeout 120
+
+            # Terminate any in-progress operation (e.g. auto-sync triggered on create)
+            argocd app terminate-op "$APP" 2>/dev/null || true
+            sleep 2
+
+            # Retry sync up to 3 times in case auto-sync fires again immediately
+            for attempt in 1 2 3; do
+              if argocd app sync "$APP" --force --prune --timeout 120; then
+                break
+              fi
+              echo "⚠️ Sync attempt $attempt failed for $APP, retrying in 5s..."
+              argocd app terminate-op "$APP" 2>/dev/null || true
+              sleep 5
+              if [ $attempt -eq 3 ]; then
+                echo "❌ All sync attempts failed for $APP"
+                return 1
+              fi
+            done
+
             argocd app wait "$APP" --health --timeout 240
             echo "✅ $APP healthy"
           }
